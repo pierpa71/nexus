@@ -1,0 +1,57 @@
+services:
+  nexus:
+    build:
+      context: .
+      args:
+        INSTALL_NODE: "false"   # "true" per server MCP stdio via npx
+    image: nexus-chat:latest
+    container_name: nexus-chat
+    ports:
+      # host:container — cambia NEXUS_PORT (file .env) per usare un'altra porta sull'host
+      - "${NEXUS_PORT:-8088}:8088"
+    volumes:
+      - nexus-data:/data
+    environment:
+      PORT: "8088"            # porta interna del container
+      # Valori iniziali: poi si modificano tutti dalla GUI (Impostazioni)
+      LLM_BASE_URL: "http://host.docker.internal:11434/v1"
+      LLM_API_KEY: "ollama"
+      LLM_MODEL: ""
+      EMBED_MODEL: "nomic-embed-text"
+      SEARXNG_URL: "http://searxng:8080"   # motore per la ricerca web (servizio qui sotto)
+      TZ: "Europe/Rome"                    # data/ora comunicate al modello
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # necessario su Linux per raggiungere Ollama sull'host
+    depends_on:
+      - searxng
+    restart: unless-stopped
+
+  # --- Motore di ricerca per la funzione "Web" (SearXNG, nessuna chiave API) -----
+  searxng:
+    image: searxng/searxng:latest
+    container_name: nexus-searxng
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_SECRET: "${SEARXNG_SECRET:-cambiami-con-una-stringa-casuale}"
+    # nessuna porta esposta: è raggiungibile solo da Nexus sulla rete interna di compose
+    restart: unless-stopped
+
+  # --- Facoltativo: Ollama nello stesso stack -------------------------------
+  # Decommenta e imposta in GUI Base URL = http://ollama:11434/v1
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #   ports:
+  #     - "11434:11434"
+  #   # deploy:            # GPU NVIDIA
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+  #   restart: unless-stopped
+
+volumes:
+  nexus-data:
+  # ollama-data:

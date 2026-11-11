@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nexus — AI Chat</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%238b5cf6'/><stop offset='1' stop-color='%2322d3ee'/></linearGradient></defs><rect width='32' height='32' rx='9' fill='url(%23g)'/><path d='M9 22V10l14 12V10' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <meta name="theme-color" content="#07070d" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="/static/theme.js"></script>
+</head>
+<body>
+  <div class="aurora"><span></span><span></span><span></span></div>
+
+  <div class="app">
+    <!-- ============ Sidebar ============ -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="logo">
+          <svg viewBox="0 0 32 32"><path d="M9 22V10l14 12V10" /></svg>
+        </div>
+        <div>
+          <div class="brand-name">Nexus</div>
+          <div class="brand-sub">AI workspace · v{{VERSION}}</div>
+        </div>
+      </div>
+
+      <button class="btn-new" id="newChat">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
+        Nuova chat
+      </button>
+
+      <div class="search-box">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+        <input id="convSearch" placeholder="Cerca conversazioni…" />
+      </div>
+
+      <div class="conv-list" id="convList"></div>
+
+      <nav class="side-nav">
+        <button data-panel="docs">
+          <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M9 13h6M9 17h6" /></svg>
+          Knowledge base <span class="pill" id="docCount">0</span>
+        </button>
+        <button data-panel="mcp">
+          <svg viewBox="0 0 24 24"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8" /><circle cx="12" cy="12" r="3" /></svg>
+          Server MCP <span class="pill" id="toolCount">0</span>
+        </button>
+        <button data-panel="appearance">
+          <svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 1 10-10c0 2.8-2.2 4-4 4h-2.2a1.8 1.8 0 0 0-1.3 3.1c.4.4.6.9.6 1.4 0 .9-.9 1.5-3.1 1.5z"/><circle cx="7.5" cy="10.5" r="1.2"/><circle cx="12" cy="7" r="1.2"/><circle cx="16.5" cy="10.5" r="1.2"/></svg>
+          Aspetto
+        </button>
+        <button data-panel="settings">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg>
+          Impostazioni
+        </button>
+      </nav>
+    </aside>
+
+    <!-- ============ Main ============ -->
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn mobile-only" id="toggleSidebar" title="Menu">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+        </button>
+        <div class="model-select" id="modelSelectWrap">
+          <span class="dot" id="statusDot"></span>
+          <select id="modelSelect" title="Modello"></select>
+        </div>
+        <div class="spacer"></div>
+        <button class="think-chip" id="thinkChip" data-mode="auto" title="Thinking del modello: clic per cambiare (Auto → On → Off)">
+          <svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
+          <span>Thinking</span><b id="thinkLabel">Auto</b>
+        </button>
+        <label class="chip-toggle web-chip" title="Consenti al modello di cercare sul web quando gli manca un'informazione">
+          <input type="checkbox" id="useWeb" />
+          <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>Web <b id="webLabel">Off</b></span>
+        </label>
+        <label class="chip-toggle" title="Usa i documenti della knowledge base">
+          <input type="checkbox" id="useRag" checked />
+          <span><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z" /><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" /></svg>RAG</span>
+        </label>
+        <label class="chip-toggle" title="Consenti al modello di usare i tool MCP">
+          <input type="checkbox" id="useTools" checked />
+          <span><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z" /></svg>Tool <b id="toolBadge">0</b></span>
+        </label>
+      </header>
+
+      <section class="chat" id="chat">
+        <div class="welcome" id="welcome">
+          <div class="orb"></div>
+          <h1>Ciao, come posso aiutarti?</h1>
+          <p>Chatta con il tuo LLM, interroga i tuoi documenti e usa i tool dei server MCP collegati.</p>
+          <div class="suggestions">
+            <button>Riassumi i documenti della knowledge base</button>
+            <button>Quali tool hai a disposizione?</button>
+            <button>Spiegami un concetto tecnico in modo semplice</button>
+            <button>Scrivi una bozza di email professionale</button>
+          </div>
+        </div>
+        <div class="messages" id="messages"></div>
+      </section>
+
+      <footer class="composer-wrap">
+        <div class="composer" id="composer">
+          <button class="icon-btn" id="attachBtn" title="Aggiungi documenti alla knowledge base">
+            <svg viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" /></svg>
+          </button>
+          <input type="file" id="fileInput" multiple hidden accept=".pdf,.docx,.txt,.md,.csv,.json,.html,.htm,.xml,.yaml,.yml,.log,.py,.js,.ts,.java,.go,.sql" />
+          <textarea id="input" rows="1" placeholder="Scrivi un messaggio…  (Shift+Invio per andare a capo)"></textarea>
+          <button class="send-btn" id="sendBtn" title="Invia">
+            <svg class="i-send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+            <svg class="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" /></svg>
+          </button>
+        </div>
+        <div class="composer-hint">Le risposte possono contenere errori: verifica le informazioni importanti.</div>
+      </footer>
+    </main>
+  </div>
+
+  <!-- ============ Drawer pannelli ============ -->
+  <div class="drawer-backdrop" id="drawerBackdrop"></div>
+  <aside class="drawer" id="drawer">
+    <header class="drawer-head">
+      <h2 id="drawerTitle"></h2>
+      <button class="icon-btn" id="drawerClose"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg></button>
+    </header>
+    <div class="drawer-body" id="drawerBody"></div>
+  </aside>
+
+  <!-- ============ Riquadro contesto ============ -->
+  <aside class="ctx-widget collapsed" id="ctxWidget" aria-live="polite">
+    <button class="ctx-pill" id="ctxPill" title="Utilizzo della finestra di contesto">
+      <svg class="ctx-ring" viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" class="bg"/><circle cx="18" cy="18" r="15" class="fg" id="ctxRing"/></svg>
+      <span id="ctxPillText">Contesto</span>
+    </button>
+    <div class="ctx-panel">
+      <header><b>Finestra di contesto</b><button class="icon-btn" id="ctxClose" title="Riduci"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></header>
+      <div id="ctxBody"></div>
+    </div>
+  </aside>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

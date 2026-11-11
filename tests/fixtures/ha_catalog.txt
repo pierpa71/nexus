@@ -1,0 +1,192 @@
+Live Context: An overview of the areas and the devices in this smart home:
+- names: 'Sensore aria Temperature'
+  domain: sensor
+  state: 'off'
+  areas: Salotto
+- names: 'Sensore aria Humidity'
+  domain: sensor
+  state: 'off'
+  areas: Salotto
+- names: 'Speaker[AirPlay]'
+  domain: media_player
+  state: 'off'
+  areas: Salotto
+- names: 'Presa Ventilatore'
+  domain: switch
+  state: 'off'
+  areas: Terrazzo
+- names: 'Automobile'
+  domain: switch
+  state: 'off'
+- names: 'Batteria Casa'
+  domain: sensor
+  state: 'off'
+  areas: Garage
+  attributes:
+    device_class: battery
+- names: 'Smart Speaker Salotto'
+  domain: media_player
+  state: 'off'
+- names: 'Giardino Nord'
+  domain: light
+  state: 'off'
+- names: 'Giardino Nord Floodlight'
+  domain: light
+  state: 'off'
+- names: 'GiardinoSud Floodlight'
+  domain: light
+  state: 'off'
+  areas: Ingresso esterno
+- names: 'GruppoLuci_1'
+  domain: light
+  state: 'off'
+- names: 'Gruppoluci_2'
+  domain: light
+  state: 'off'
+- names: 'Home'
+  domain: weather
+  state: 'off'
+  areas: Casa
+- names: 'Termometro1 Temperature'
+  domain: sensor
+  state: 'off'
+  areas: Cucina
+- names: 'Lampadina E27 globe'
+  domain: light
+  state: 'off'
+- names: 'Luce Ingresso'
+  domain: switch
+  state: 'off'
+- names: 'Luce Portone'
+  domain: light
+  state: 'off'
+- names: 'Luce Cantina due'
+  domain: light
+  state: 'off'
+- names: 'Luce Cantina uno'
+  domain: switch
+  state: 'off'
+- names: 'Luce Terrazzo new'
+  domain: switch
+  state: 'off'
+- names: 'Luce_giardino_1 Light'
+  domain: light
+  state: 'off'
+  areas: Giardino
+- names: 'Luce_giardino_2'
+  domain: light
+  state: 'off'
+  areas: Giardino
+- names: 'Luce_giardino_3 Light'
+  domain: light
+  state: 'off'
+  areas: Giardino
+- names: 'Meter Active power, Potenza rete'
+  domain: sensor
+  state: 'off'
+  areas: Garage
+- names: 'ClimaSalotto'
+  domain: climate
+  state: 'off'
+  areas: Salotto
+- names: 'ClimaSalotto Room temperature'
+  domain: sensor
+  state: 'off'
+  areas: Salotto
+- names: 'PresaTV'
+  domain: switch
+  state: 'on'
+  areas: Salotto
+  attributes:
+    device_class: outlet
+- names: 'PresaTV consumoTV'
+  domain: sensor
+  state: 'off'
+  areas: Salotto
+- names: 'Camera_Gazebo Floodlight'
+  domain: light
+  state: 'off'
+  areas: Giardino
+- names: 'Termostato Casa'
+  domain: climate
+  state: 'off'
+- names: 'Presa_smart_studio'
+  domain: switch
+  state: 'off'
+  areas: Studio
+- names: 'asciuga_trice'
+  domain: switch
+  state: 'off'
+  areas: Lavanderia
+- names: 'asciuga_trice'
+  domain: sensor
+  state: 'off'
+  areas: Lavanderia
+- names: 'presa_camera'
+  domain: switch
+  state: 'off'
+  areas: Camera
+- names: 'lampada_tavolo_soggiorno Light, Tavolo'
+  domain: light
+  state: 'off'
+  areas: Salotto
+- names: 'lampada_tv_light Light, luce tv'
+  domain: light
+  state: 'off'
+  areas: Salotto
+- names: 'lava-stoviglie-cantina'
+  domain: switch
+  state: 'off'
+  areas: Cucina
+- names: 'lava-trice'
+  domain: switch
+  state: 'off'
+  areas: Lavanderia
+- names: 'lava-trice'
+  domain: sensor
+  state: 'off'
+  areas: Lavanderia
+- names: 'luce_portico Light'
+  domain: light
+  state: 'off'
+  areas: Ingresso esterno
+- names: 'potenza_fv_totale'
+  domain: sensor
+  state: 'off'
+- names: 'potenza_totale_assorbita'
+  domain: sensor
+  state: 'off'
+- names: 'sensore_porta_ingresso'
+  domain: binary_sensor
+  state: 'off'
+- names: 'termometro esterno Temperature'
+  domain: sensor
+  state: 'off'
+  areas: Ingresso esterno
+- names: 'auto_elettrica Charge'
+  domain: switch
+  state: 'off'
+  areas: Garage
+- names: 'auto_elettrica Climate'
+  domain: climate
+  state: 'off'
+  areas: Garage
+- names: 'auto_elettrica Battery level'
+  domain: sensor
+  state: 'off'
+  areas: Garage
+- names: 'auto_elettrica Frunk'
+  domain: cover
+  state: 'off'
+  areas: Garage
+- names: 'auto_elettrica Charge port door'
+  domain: cover
+  state: 'off'
+  areas: Garage
+- names: 'auto_elettrica Outside temperature'
+  domain: sensor
+  state: 'off'
+  areas: Garage
+- names: 'Smart TV Salotto'
+  domain: media_player
+  state: unavailable

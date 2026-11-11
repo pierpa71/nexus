@@ -1,0 +1,18 @@
+# Configurazione minima di SearXNG per Nexus (le altre opzioni restano quelle di default)
+use_default_settings: true
+
+server:
+  # sovrascritta dalla variabile SEARXNG_SECRET del docker-compose
+  secret_key: "cambiami-con-una-stringa-casuale"
+  limiter: false        # istanza privata usata solo da Nexus
+  image_proxy: false
+
+search:
+  safe_search: 1
+  default_lang: "it"
+  formats:
+    - html
+    - json              # necessario: Nexus usa l'API JSON
+
+ui:
+  default_locale: "it"
