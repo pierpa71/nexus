@@ -13,17 +13,39 @@ services:
       - nexus-data:/data
     environment:
       PORT: "8088"            # porta interna del container
+      # Knowledge base: PostgreSQL + pgvector (servizio "db" qui sotto)
+      DATABASE_URL: "postgresql://nexus:${POSTGRES_PASSWORD:-nexus}@db:5432/nexus"
       # Valori iniziali: poi si modificano tutti dalla GUI (Impostazioni)
       LLM_BASE_URL: "http://host.docker.internal:11434/v1"
       LLM_API_KEY: "ollama"
       LLM_MODEL: ""
-      EMBED_MODEL: "nomic-embed-text"
+      EMBED_MODEL: "bge-m3"     # multilingue: domande in italiano su documenti inglesi e viceversa
       SEARXNG_URL: "http://searxng:8080"   # motore per la ricerca web (servizio qui sotto)
       TZ: "Europe/Rome"                    # data/ora comunicate al modello
     extra_hosts:
       - "host.docker.internal:host-gateway"   # necessario su Linux per raggiungere Ollama sull'host
     depends_on:
-      - searxng
+      db:
+        condition: service_healthy
+      searxng:
+        condition: service_started
+    restart: unless-stopped
+
+  # --- Knowledge base: PostgreSQL + pgvector ---------------------------------
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: nexus-db
+    environment:
+      POSTGRES_DB: nexus
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-nexus}"
+    volumes:
+      - nexus-pgdata:/var/lib/postgresql/data
+    # nessuna porta esposta: è raggiungibile solo da Nexus sulla rete interna di compose
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus"]
+      interval: 5s
+      retries: 20
     restart: unless-stopped
 
   # --- Motore di ricerca per la funzione "Web" (SearXNG, nessuna chiave API) -----
@@ -54,4 +76,5 @@ services:
 
 volumes:
   nexus-data:
+  nexus-pgdata:
   # ollama-data:

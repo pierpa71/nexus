@@ -1,4 +1,6 @@
-"""Persistenza su SQLite: impostazioni, server MCP, tool, documenti, chunk e conversazioni."""
+"""Persistenza su SQLite: impostazioni, server MCP, tool e conversazioni.
+
+Documenti e passaggi della knowledge base stanno in PostgreSQL + pgvector (kbdb.py)."""
 import json
 import os
 import sqlite3
@@ -38,24 +40,6 @@ CREATE TABLE IF NOT EXISTS mcp_tools (
     input_schema TEXT DEFAULT '{}',
     enabled INTEGER DEFAULT 1,
     PRIMARY KEY (server_id, name)
-);
-CREATE TABLE IF NOT EXISTS documents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    size INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'processing',
-    error TEXT DEFAULT '',
-    chunks INTEGER DEFAULT 0,
-    embed_model TEXT DEFAULT '',
-    enabled INTEGER DEFAULT 1,
-    created_at REAL
-);
-CREATE TABLE IF NOT EXISTS chunks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    idx INTEGER,
-    text TEXT,
-    embedding BLOB
 );
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
@@ -118,11 +102,17 @@ DEFAULT_SETTINGS = {
                      "Quando usi informazioni dai documenti, cita la fonte tra parentesi quadre, es. [1].",
     "embed_base_url": os.environ.get("EMBED_BASE_URL", ""),
     "embed_api_key": os.environ.get("EMBED_API_KEY", ""),
-    "embed_model": os.environ.get("EMBED_MODEL", "nomic-embed-text"),
+    "embed_model": os.environ.get("EMBED_MODEL", "bge-m3"),
     "chunk_size": 1000,
     "chunk_overlap": 150,
     "rag_top_k": 5,
-    "rag_min_score": 0.25,
+    "rag_min_score": 0.42,           # tarata su bge-m3: sotto ~0.4 gli estratti non sono pertinenti
+    "rag_candidates": 30,             # candidati per ramo (vettoriale / lessicale) prima della fusione RRF
+    # lingue dei documenti: stemming della ricerca lessicale e pacchetti OCR (italian, english, french, german, spanish)
+    "kb_languages": [x.strip() for x in os.environ.get("LANGUAGES", "italian,english").split(",") if x.strip()],
+    "kb_fallback_language": os.environ.get("FTS_LANGUAGE", "italian"),  # se il riconoscimento è incerto
+    "ocr_mode": os.environ.get("OCR_MODE", "auto"),   # auto | always | off
+    "ocr_workers": int(os.environ.get("OCR_WORKERS", "2")),
     "rag_inject": "user",             # dove inserire i documenti: "user" (più efficace) o "system"
     "max_tool_rounds": 8,
     "history_max_messages": 20,       # messaggi precedenti inviati al modello (poi ulteriormente ridotti se il contesto è pieno)
@@ -238,6 +228,26 @@ def sync_tools(sid, tools):
 
 
 _migrate_settings()
+
+
+def legacy_documents():
+    """Documenti della knowledge base delle versioni precedenti (SQLite), da migrare in PostgreSQL."""
+    with _lock:
+        has = _conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").fetchone()
+    if not has:
+        return None
+    docs = q("SELECT * FROM documents ORDER BY id")
+    for d in docs:
+        d["chunks_text"] = [r["text"] for r in q("SELECT text FROM chunks WHERE doc_id=? ORDER BY idx", (d["id"],))]
+    return docs
+
+
+def drop_legacy_documents():
+    with _lock:
+        _conn.execute("DROP TABLE IF EXISTS chunks")
+        _conn.execute("DROP TABLE IF EXISTS documents")
+        _conn.commit()
+        _conn.execute("VACUUM")
 
 
 def now():

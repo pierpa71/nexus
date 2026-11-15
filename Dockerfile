@@ -2,6 +2,8 @@ FROM python:3.12-slim
 
 # Imposta INSTALL_NODE=true per poter avviare server MCP stdio basati su Node (npx ...)
 ARG INSTALL_NODE=false
+# OCR della knowledge base: pacchetti lingua di Tesseract (aggiungi fra deu spa se abiliti quelle lingue)
+ARG OCR_LANG_PACKS="ita eng"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -11,7 +13,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_PYTHON_PREFERENCE=only-system \
     PIP_NO_CACHE_DIR=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates tesseract-ocr \
+      $(for l in $OCR_LANG_PACKS; do echo tesseract-ocr-$l; done) \
     && if [ "$INSTALL_NODE" = "true" ]; then apt-get install -y --no-install-recommends nodejs npm; fi \
     && rm -rf /var/lib/apt/lists/*
 

@@ -1,6 +1,6 @@
 # Nexus — AI Chat con MCP e RAG
 
-Web app containerizzata per chattare con qualunque LLM **OpenAI-compatibile** (Ollama, vLLM, LM Studio, LiteLLM, OpenAI…), con integrazione di **server MCP** (tool abilitabili singolarmente) e **RAG** sui tuoi documenti.
+Web app containerizzata per chattare con qualunque LLM **OpenAI-compatibile** (Ollama, vLLM, LM Studio, LiteLLM, OpenAI…), con integrazione di **server MCP** (tool abilitabili singolarmente) e **RAG** sui tuoi documenti: PostgreSQL + pgvector, ricerca ibrida, OCR delle scansioni, documenti multilingua e citazioni con il numero di pagina (motore derivato da Tabularium).
 
 ## Avvio rapido
 
@@ -13,11 +13,11 @@ docker compose up -d --build
 Per usare un'altra porta sull'host senza toccare i file: `NEXUS_PORT=9000 docker compose up -d` (oppure scrivi `NEXUS_PORT=9000` nel file `.env`).
 
 Poi, dalla GUI:
-1. **Impostazioni** → scegli il preset (es. *Ollama*), premi **Carica** per elencare i modelli e seleziona quello di chat. Imposta il modello di embedding (es. `nomic-embed-text`) e salva.
+1. **Impostazioni** → scegli il preset (es. *Ollama*), premi **Carica** per elencare i modelli e seleziona quello di chat. Imposta il modello di embedding (default `bge-m3`, multilingue) e salva.
 2. **Server MCP** → *Aggiungi server MCP*, scegli il trasporto, collega. Compare l'elenco dei tool con uno switch per ciascuno (più i pulsanti *Tutti* / *Nessuno* e il filtro).
 3. **Knowledge base** → trascina i documenti (anche direttamente sulla barra di input della chat). Puoi provare la ricerca semantica dal pannello.
 
-Con Ollama sull'host ricordati di scaricare i modelli: `ollama pull llama3.1` (o `qwen3`, che gestisce bene i tool) e `ollama pull nomic-embed-text`.
+Con Ollama sull'host ricordati di scaricare i modelli: `ollama pull llama3.1` (o `qwen3`, che gestisce bene i tool) e `ollama pull bge-m3`.
 
 > **Ollama su Linux**: per default ascolta solo su 127.0.0.1. Perché il container lo raggiunga avvialo con `OLLAMA_HOST=0.0.0.0` oppure usa il servizio `ollama` commentato nel `docker-compose.yml` (in quel caso Base URL = `http://ollama:11434/v1`).
 
@@ -27,11 +27,60 @@ Con Ollama sull'host ricordati di scaricare i modelli: `ollama pull llama3.1` (o
 |---|---|
 | **Endpoint LLM** | Base URL, API key, modello, temperatura, max token, system prompt, tutto da GUI. Elenco modelli letto da `/v1/models`. Selettore rapido del modello nella barra in alto. |
 | **MCP** | Trasporti **Streamable HTTP**, **SSE** (legacy) e **stdio**. Campo dedicato per il **Bearer token** (salvato mascherato, sostituibile o rimovibile dalla GUI), header personalizzati aggiuntivi (es. `X-API-Key`), variabili d'ambiente per stdio. Abilitazione per server **e per singolo tool**; lo stato viene mantenuto quando si ricarica l'elenco dei tool. Tool calling multi-round (configurabile) con card espandibili di argomenti e risultati in chat. |
-| **RAG** | PDF, DOCX, TXT/MD/CSV/HTML/JSON e codice sorgente. Chunking ricorsivo con overlap, embedding tramite endpoint `/v1/embeddings` (anche diverso da quello di chat), ricerca vettoriale coseno, soglia minima e top-K. Le fonti usate compaiono sotto la risposta con anteprima al passaggio del mouse. Documenti attivabili/disattivabili singolarmente. |
+| **RAG** | PDF (anche scansionati), DOCX, immagini e foto (OCR), TXT/MD/CSV/HTML/JSON e codice sorgente. PostgreSQL + pgvector (indice HNSW) e **ricerca ibrida**: similarità vettoriale + full-text con lo stemming della lingua di ogni passaggio, fuse con Reciprocal Rank Fusion. Le fonti indicano file e **pagina**: un clic apre il documento a quella pagina. Deduplica dei file (SHA-256), documenti attivabili singolarmente, ricalcolo automatico degli embedding quando cambi modello. Vedi *Knowledge base* qui sotto. |
 | **Thinking** | Pulsante **Thinking** nella barra in alto: *Auto* (decide il modello), *On* (forzato, con intensità low/medium/high), *Off* (disattivato, risposte più rapide). Nelle Impostazioni scegli i metodi in base al backend (vedi sotto). I blocchi `<think>…</think>` restituiti dentro il testo vengono separati e mostrati nel riquadro "Ragionamento". |
 | **Aspetto** | Pannello *Aspetto* con anteprima dal vivo: tema scuro/chiaro/automatico, 7 palette di colori o colori personalizzati, sfondo (aurora animata o ferma, gradiente, tinta unita, immagine caricata con oscuramento regolabile), carattere e dimensione del testo, angoli, densità, larghezza della chat, stile dei messaggi, trasparenza dei pannelli, grana e animazioni. Le preferenze sono salvate sul server e nel browser. |
 | **Chat** | Streaming, Markdown con evidenziazione del codice, visualizzazione del "ragionamento" per i modelli che lo espongono (qwen3, deepseek-r1…), stop della generazione, cronologia con ricerca, rinomina ed eliminazione. |
 | **Offline** | Tutte le librerie frontend sono incluse nell'immagine: funziona anche in reti isolate (il font Inter viene caricato da Google se raggiungibile, altrimenti si usa il font di sistema). |
+
+## Knowledge base
+
+| Funzione | Dettagli |
+|---|---|
+| **Ricerca ibrida** | La ricerca vettoriale trova i concetti, quella full-text trova codici, numeri di protocollo e nomi propri che gli embedding spesso mancano. I due elenchi sono fusi con Reciprocal Rank Fusion. La soglia di similarità vale solo per la parte vettoriale: i passaggi che contengono le parole esatte restano. |
+| **OCR** (Tesseract) | PDF scansionati, PDF misti (OCR solo sulle pagine senza testo), foto e TIFF multipagina, con raddrizzamento automatico delle pagine ruotate. Modalità *Auto* / *Sempre* / *Disattivato* in Impostazioni. Le fonti da OCR sono marcate e il modello viene avvisato che possono contenere errori di riconoscimento. Circa 1–3 secondi per pagina. |
+| **Lingue** | La lingua è riconosciuta per documento e per singolo passaggio (italiano e inglese di default; anche francese, tedesco, spagnolo). Con `bge-m3` puoi fare domande in italiano su documenti inglesi e viceversa. Al caricamento puoi forzare la lingua. |
+| **Citazioni** | Ogni fonte riporta file, pagina e lingua; il modello cita con [n]. Le domande brevi di follow-up ("e la scadenza?") vengono cercate insieme alla domanda precedente. |
+| **Cambio di modello di embedding** | Nexus misura la dimensione dei vettori, adatta la colonna e ricalcola gli embedding in background dai testi già estratti: niente da ricaricare. Nel frattempo funziona la ricerca per parole. |
+| **Reindicizza tutto** | Ripete estrazione, OCR e suddivisione dagli originali: serve dopo aver cambiato dimensione dei chunk, lingue o modalità OCR. |
+
+Per altre lingue OCR ricostruisci l'immagine con `--build-arg OCR_LANG_PACKS="ita eng fra deu"` (o modifica il `Dockerfile`).
+
+### Analisi completa di un documento
+
+Il RAG passa al modello solo i passaggi più pertinenti (Top-K), quindi non basta per richieste su **tutto** un documento: «tabella con tutti gli articoli», «elenca tutte le scadenze», «riassumi capitolo per capitolo». Per queste c'è il pulsante **Analisi completa** nella barra in alto (o **Analizza** accanto al documento nella Knowledge base): scegli il documento e scrivi la richiesta.
+
+- Il documento viene diviso in blocchi che stanno nella finestra di contesto del modello. Da ogni blocco il modello estrae ciò che serve, e l'avanzamento si vede nel messaggio.
+- I risultati vengono uniti dal modello se ci stanno nel contesto; altrimenti vengono concatenati nell'ordine del documento, e le tabelle diventano una sola, fondendo le righe con lo stesso numero o codice.
+- Se un blocco produce più testo dello spazio disponibile, viene diviso a metà e rianalizzato.
+- È lenta: la Costituzione (67 pagine) richiede circa 5–6 minuti con un modello da 8B e contesto 8192. Con un contesto più ampio (`OLLAMA_CONTEXT_LENGTH`) i blocchi sono meno numerosi e l'unione finale la fa il modello.
+- La selezione vale per un solo messaggio; le domande successive tornano al RAG normale.
+
+### Riga di comando
+
+Per archivi grandi conviene la CLI, che mostra l'avanzamento (monta la cartella nel container):
+```bash
+docker compose exec nexus python -m app.cli ingest /percorso/archivio   # ricorsivo; --lang en per forzare la lingua
+docker compose exec nexus python -m app.cli search "penali per ritardata consegna"
+docker compose exec nexus python -m app.cli list
+docker compose exec nexus python -m app.cli delete 12
+docker compose exec nexus python -m app.cli reembed                     # calcola gli embedding mancanti
+```
+
+### Importare un archivio Tabularium
+
+Documenti, passaggi, pagine, lingue e pagine OCR vengono copiati; gli embedding sono ricalcolati con il modello di Nexus. Con `--files` i file originali trovati nelle cartelle indicate (riconosciuti dall'hash) vengono allegati, così le citazioni si possono aprire.
+```bash
+# il container di Nexus deve raggiungere il database di Tabularium, es. sulla stessa rete:
+docker network connect tabularium_default nexus-chat
+docker compose exec nexus python -m app.cli import-tabularium \
+    postgresql://tabularium:tabularium@tabularium-db-1:5432/tabularium --files /cartella/originali
+docker network disconnect tabularium_default nexus-chat
+```
+
+### Aggiornamento dalla versione 1.x
+
+Al primo avvio della 2.0 i documenti della vecchia knowledge base (SQLite) vengono reindicizzati automaticamente nel nuovo archivio PostgreSQL a partire dagli originali in `/data/uploads`. Serve il nuovo servizio `db` del `docker-compose.yml`: aggiorna con `docker compose up -d --build`.
 
 ## Server MCP: esempi
 
@@ -115,7 +164,7 @@ Regola pratica sulla memoria del Mac: 16 GB → modelli fino a ~8B (Q4) con cont
 
 ## Configurazione
 
-Tutto si gestisce dalla GUI ed è salvato in SQLite nel volume `/data` (`nexus.db`). Le variabili d'ambiente del compose servono solo come valori iniziali:
+Tutto si gestisce dalla GUI ed è salvato in SQLite nel volume `/data` (`nexus.db`); documenti e passaggi della knowledge base stanno in PostgreSQL (servizio `db`, volume `nexus-pgdata`). Le variabili d'ambiente del compose servono solo come valori iniziali:
 
 | Variabile | Default |
 |---|---|
@@ -123,7 +172,11 @@ Tutto si gestisce dalla GUI ed è salvato in SQLite nel volume `/data` (`nexus.d
 | `LLM_API_KEY` | `ollama` |
 | `LLM_MODEL` | *(vuoto → primo modello disponibile)* |
 | `EMBED_BASE_URL` / `EMBED_API_KEY` | *(vuoti → stessi dell'LLM)* |
-| `EMBED_MODEL` | `nomic-embed-text` |
+| `EMBED_MODEL` | `bge-m3` |
+| `DATABASE_URL` | `postgresql://nexus:nexus@db:5432/nexus` |
+| `POSTGRES_PASSWORD` | `nexus` (nel file `.env`) |
+| `LANGUAGES` / `FTS_LANGUAGE` | `italian,english` / `italian` (lingue iniziali della knowledge base) |
+| `OCR_MODE` / `OCR_WORKERS` / `OCR_DPI` | `auto` / `2` / `300` |
 | `PORT` | `8088` (porta interna del container) |
 | `NEXUS_PORT` | `8088` (porta pubblicata sull'host, nel file `.env`) |
 | `MCP_CONNECT_TIMEOUT` / `MCP_CALL_TIMEOUT` | `30` / `120` secondi |
@@ -131,9 +184,9 @@ Tutto si gestisce dalla GUI ed è salvato in SQLite nel volume `/data` (`nexus.d
 ## Note
 
 - **Sicurezza**: l'app non ha autenticazione. Esponila solo in rete fidata o dietro un reverse proxy con login (es. Traefik/Nginx + OAuth2 Proxy). Le API key non vengono mai restituite in chiaro alla GUI, ma sono salvate in chiaro nel DB.
-- **Cambio modello di embedding**: i vettori di modelli diversi non sono confrontabili. Dopo il cambio usa *Knowledge base → Reindicizza tutto* (gli originali sono conservati in `/data/uploads`).
-- **Errore `model 'nomic-embed-text' not found`**: il modello di embedding non è installato. Esegui `ollama pull nomic-embed-text`, poi *Riprova*. Con *Impostazioni → Prova embedding* verifichi la configurazione prima di caricare i documenti.
-- **Scalabilità RAG**: la ricerca è in memoria (numpy), adatta fino a qualche centinaio di migliaia di chunk. Oltre conviene sostituire `app/rag.py` con Qdrant o pgvector.
+- **Cambio modello di embedding**: gestito da solo, vedi *Knowledge base*. Gli originali sono conservati in `/data/uploads`.
+- **Errore `model 'bge-m3' not found`**: il modello di embedding non è installato. Esegui `ollama pull bge-m3`, poi *Riprova*. Con *Impostazioni → Prova embedding* verifichi la configurazione prima di caricare i documenti.
+- **Scalabilità RAG**: PostgreSQL + pgvector con indice HNSW e GIN; per archivi di migliaia di file usa la CLI `ingest`.
 - Il modello deve supportare il **function calling** per usare i tool MCP (es. llama3.1+, qwen2.5/qwen3, mistral-nemo, gpt-4o…).
 
 ## Struttura
@@ -142,7 +195,12 @@ Tutto si gestisce dalla GUI ed è salvato in SQLite nel volume `/data` (`nexus.d
 app/
   main.py         API FastAPI + streaming SSE della chat e ciclo di tool calling
   mcp_client.py   connessione ai server MCP (HTTP/SSE/stdio), mapping tool → function calling
-  rag.py          estrazione testo, chunking, embedding, ricerca vettoriale
+  rag.py          knowledge base: indicizzazione, ricalcolo embedding, ricerca ibrida (RRF)
+  kbdb.py         PostgreSQL + pgvector: schema, documenti, passaggi, query vettoriali e full-text
+  parsing.py      estrazione testo per pagina (PDF, DOCX, HTML, testo) e chunking
+  ocr.py          OCR Tesseract di scansioni e immagini
+  language.py     riconoscimento della lingua per passaggio
+  cli.py          riga di comando: ingest, search, list, delete, reembed, import-tabularium
   db.py           schema SQLite e impostazioni
   llm.py          client OpenAI-compatibili
   static/         frontend (HTML/CSS/JS vanilla + librerie vendor)
@@ -152,5 +210,7 @@ tests/            server MCP di prova e finto endpoint LLM per test locali
 Sviluppo locale senza Docker:
 ```bash
 pip install -r requirements.txt
-DATA_DIR=./data uvicorn app.main:app --reload --port 8088
+# serve un PostgreSQL con pgvector (es. docker run -p 5432:5432 -e POSTGRES_USER=nexus -e POSTGRES_PASSWORD=nexus pgvector/pgvector:pg16)
+# e Tesseract per l'OCR (macOS: brew install tesseract tesseract-lang)
+DATABASE_URL=postgresql://nexus:nexus@localhost:5432/nexus DATA_DIR=./data uvicorn app.main:app --reload --port 8088
 ```

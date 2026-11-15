@@ -1,20 +1,26 @@
 """Nexus Chat — API FastAPI + frontend statico."""
 import asyncio
 import json
+import logging
 import os
 import uuid
+from urllib.parse import quote
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import BadRequestError
 from pydantic import BaseModel
 
-from . import db, entities, mcp_client, rag, websearch
+from . import analysis, db, entities, kbdb, mcp_client, rag, websearch
 from .llm import chat_client, ollama_runtime
 
-APP_VERSION = "1.13.0"
+APP_VERSION = "2.0.0"
 app = FastAPI(title="Nexus Chat", version=APP_VERSION)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+for _noisy in ("pypdf", "httpx", "httpx2", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.ERROR if _noisy == "pypdf" else logging.WARNING)
+log = logging.getLogger("nexus")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 MASK = "••••••••"
 SECRET_KEYS = ("llm_api_key", "embed_api_key", "web_api_key")
@@ -31,12 +37,25 @@ def get_settings():
 
 
 @app.put("/api/settings")
-def put_settings(data: dict):
+async def put_settings(data: dict):
     for k in SECRET_KEYS:
         if isinstance(data.get(k), str) and data[k].startswith(MASK):
             data.pop(k)  # valore mascherato: mantieni quello salvato
+    if "kb_languages" in data:
+        from .language import AVAILABLE
+        langs = data["kb_languages"]
+        if isinstance(langs, str):
+            langs = [x.strip() for x in langs.split(",")]
+        data["kb_languages"] = [x for x in langs if x in AVAILABLE] or ["italian"]
+    if data.get("ocr_mode") not in (None, "auto", "always", "off"):
+        data.pop("ocr_mode")
+    before = db.get_settings()["embed_model"]
     db.save_settings(data)
-    rag.invalidate_cache()
+    # nuovo modello di embedding: i passaggi già estratti vengono rivettorializzati in background
+    if db.get_settings()["embed_model"] != before and kb_state["ready"]:
+        meta = await kbdb.embedding_meta()
+        if meta:
+            rag.start_reembed()
     return get_settings()
 
 
@@ -185,46 +204,151 @@ def mcp_tool_toggle(sid: int, name: str, data: dict):
 
 
 # ======================= Documenti / RAG =======================
+kb_state = {"ready": False, "error": ""}
+
+
+async def _kb_startup():
+    """Prepara la knowledge base su PostgreSQL, migra i documenti delle versioni precedenti (SQLite)
+    e riprende le indicizzazioni interrotte da un riavvio."""
+    try:
+        await kbdb.init_schema()
+        kb_state.update(ready=True, error="")
+    except Exception as e:  # noqa: BLE001
+        kb_state["error"] = str(e)
+        log.error("Knowledge base non disponibile: %s", e)
+        return
+    try:
+        await _migrate_legacy()
+    except Exception:  # noqa: BLE001
+        log.exception("Migrazione dei documenti della versione precedente non riuscita")
+    for d in await kbdb.fetch("SELECT id FROM documents WHERE status='processing'"):
+        asyncio.create_task(rag.ingest(d["id"]))
+    if (await kbdb.count_without_embedding()) > 0:
+        rag.start_reembed()
+
+
+async def _migrate_legacy():
+    docs = db.legacy_documents()
+    if docs is None:
+        return
+    for d in docs:
+        legacy_file = os.path.join(rag.UPLOAD_DIR, f"{d['id']}.bin")
+        data = None
+        if os.path.exists(legacy_file):
+            with open(legacy_file, "rb") as f:
+                data = f.read()
+        if data is not None:
+            r = await rag.register_upload(d["name"], data)
+            if r["status"] == "processing" and not d.get("enabled", 1):
+                await kbdb.set_enabled(r["id"], False)
+        elif d["chunks_text"]:
+            r = await rag.import_text_document(d["name"], [(None, t) for t in d["chunks_text"]],
+                                               source="nexus-1.x", size=d.get("size") or 0)
+        else:
+            r = {"status": "skipped"}
+        log.info("Migrazione dalla versione 1.x: %s → %s", d["name"], r["status"])
+    db.drop_legacy_documents()
+    for d in docs:
+        try:
+            os.remove(os.path.join(rag.UPLOAD_DIR, f"{d['id']}.bin"))
+        except FileNotFoundError:
+            pass
+
+
+@app.on_event("startup")
+async def _startup():
+    asyncio.create_task(_kb_startup())
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    await kbdb.close()
+
+
+def _kb_required():
+    if not kb_state["ready"]:
+        raise HTTPException(503, "Knowledge base non disponibile: " + (kb_state["error"] or "avvio in corso…"))
+
+
 @app.get("/api/documents")
-def documents():
-    return db.q("SELECT * FROM documents ORDER BY created_at DESC")
+async def documents():
+    if not kb_state["ready"]:
+        return []
+    docs = await kbdb.list_documents()
+    for d in docs:  # nomi compatibili con il frontend
+        d["name"], d["size"], d["chunks"] = d["filename"], d["size_bytes"], d["num_chunks"]
+    return docs
+
+
+@app.get("/api/kb/status")
+async def kb_status():
+    if not kb_state["ready"]:
+        return {"ready": False, "error": kb_state["error"]}
+    return {"ready": True, **(await rag.kb_status())}
 
 
 @app.post("/api/documents")
-async def upload(bg: BackgroundTasks, files: list[UploadFile] = File(...)):
+async def upload(bg: BackgroundTasks, files: list[UploadFile] = File(...), language: str = Form("auto")):
+    _kb_required()
     out = []
     for f in files:
         data = await f.read()
-        did = db.x("INSERT INTO documents(name, size, status, created_at) VALUES(?,?, 'processing', ?)",
-                   (f.filename, len(data), db.now()))
-        rag.save_original(did, data)
-        bg.add_task(rag.ingest, did, f.filename, data)
-        out.append({"id": did, "name": f.filename})
+        if not data:
+            out.append({"name": f.filename, "status": "error", "error": "file vuoto"})
+            continue
+        try:
+            r = await rag.register_upload(f.filename, data, language)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if r["status"] in ("processing", "retry"):
+            bg.add_task(rag.ingest, r["id"])
+        out.append(r)
     return out
 
 
+@app.get("/api/documents/{did}/file")
+async def doc_file(did: int):
+    _kb_required()
+    doc = await kbdb.get_document(did)
+    data = rag.read_original(did) if doc else None
+    if data is None:
+        raise HTTPException(404, "File originale non disponibile")
+    name = doc["filename"]
+    return Response(data, media_type=doc["mime"] or "application/octet-stream",
+                    headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(name)}"})
+
+
 @app.patch("/api/documents/{did}")
-def doc_toggle(did: int, data: dict):
-    db.x("UPDATE documents SET enabled=? WHERE id=?", (int(bool(data.get("enabled"))), did))
-    rag.invalidate_cache()
+async def doc_toggle(did: int, data: dict):
+    _kb_required()
+    await kbdb.set_enabled(did, bool(data.get("enabled")))
     return {"ok": True}
 
 
 @app.post("/api/documents/{did}/reindex")
-def doc_reindex(did: int, bg: BackgroundTasks):
-    db.x("UPDATE documents SET status='processing', error='' WHERE id=?", (did,))
+async def doc_reindex(did: int, bg: BackgroundTasks):
+    _kb_required()
+    await kbdb.set_status(did, "processing")
     bg.add_task(rag.reindex, did)
     return {"ok": True}
 
 
 @app.post("/api/documents/reindex")
-def doc_reindex_all(bg: BackgroundTasks, data: dict | None = None):
+async def doc_reindex_all(bg: BackgroundTasks, data: dict | None = None):
+    _kb_required()
     only_errors = bool((data or {}).get("only_errors"))
-    rows = db.q("SELECT id FROM documents" + (" WHERE status='error'" if only_errors else ""))
+    rows = await kbdb.fetch("SELECT id FROM documents" + (" WHERE status='error'" if only_errors else ""))
     for r in rows:
-        db.x("UPDATE documents SET status='processing', error='' WHERE id=?", (r["id"],))
+        await kbdb.set_status(r["id"], "processing")
         bg.add_task(rag.reindex, r["id"])
     return {"count": len(rows)}
+
+
+@app.post("/api/kb/reembed")
+async def kb_reembed():
+    _kb_required()
+    rag.start_reembed()
+    return {"ok": True}
 
 
 @app.post("/api/web/test")
@@ -242,24 +366,31 @@ async def embed_test():
     s = db.get_settings()
     try:
         v = await rag.embed(["test di connessione"], s)
-        return {"ok": True, "dim": int(v.shape[1]), "model": s["embed_model"]}
+        meta = await kbdb.embedding_meta() if kb_state["ready"] else None
+        return {"ok": True, "dim": int(v.shape[1]), "model": s["embed_model"],
+                "archive": meta, "reembed": bool(meta and (meta.get("model") != s["embed_model"]
+                                                            or meta.get("dim") != int(v.shape[1])))}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": rag.explain_embed_error(e, s)}
 
 
 @app.delete("/api/documents/{did}")
-def doc_delete(did: int):
+async def doc_delete(did: int):
+    _kb_required()
+    await kbdb.delete_document(did)
     rag.delete_original(did)
-    db.x("DELETE FROM documents WHERE id=?", (did,))
-    rag.invalidate_cache()
     return {"ok": True}
 
 
 @app.post("/api/rag/search")
 async def rag_search(data: dict):
+    _kb_required()
     s = db.get_settings()
     try:
-        return await rag.search(data.get("query", ""), data.get("k") or s["rag_top_k"], 0)
+        notices = []
+        hits = await rag.search(data.get("query", ""), data.get("k") or s["rag_top_k"], 0,
+                                data.get("document_ids") or None, notices)
+        return {"hits": hits, "notices": notices}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, str(e))
 
@@ -299,6 +430,8 @@ class ChatIn(BaseModel):
     conversation_id: str | None = None
     use_rag: bool = True
     use_tools: bool = True
+    document_ids: list[int] | None = None  # limita la ricerca a questi documenti
+    analyze_doc_id: int | None = None      # analisi completa di un documento (map-reduce) invece del RAG
     model: str | None = None
     thinking: str | None = None  # auto | on | off (override della impostazione)
     web_search: bool | None = None  # override del toggle Web
@@ -481,24 +614,31 @@ async def chat_stream(req: ChatIn):
         system = s["system_prompt"] + "\n\n" + now_line()
 
         # ---- RAG ----
-        if req.use_rag and db.q("SELECT 1 FROM documents WHERE status='ready' AND enabled=1 LIMIT 1"):
+        if req.use_rag and not kb_state["ready"] and kb_state["error"]:
+            yield sse("notice", {"text": f"Knowledge base non disponibile: {kb_state['error']}"})
+        if req.use_rag and kb_state["ready"] and await kbdb.has_searchable():
+            notices = []
             try:
-                hits = await rag.search(req.message, s["rag_top_k"], float(s["rag_min_score"]))
+                hits = await rag.search(req.message, s["rag_top_k"], float(s["rag_min_score"]), req.document_ids,
+                                        notices, alt_query=rag.followup_query(req.message, hist_rows))
             except Exception as e:  # noqa: BLE001
                 hits = []
                 yield sse("notice", {"text": f"RAG non disponibile: {e}"})
+            for n in notices:
+                yield sse("notice", {"text": f"Knowledge base: {n}."})
             if hits:
-                ctx = "\n\n".join(f"[{i + 1}] (fonte: {h['name']})\n{h['text']}" for i, h in enumerate(hits))
+                ctx = rag.context_block(hits)
                 rag_ctx = ctx
                 if s.get("rag_inject", "user") == "system":
                     system += ("\n\n### Contesto dai documenti della knowledge base\n"
-                               "Usa il contesto seguente se pertinente alla domanda e cita le fonti con [n].\n\n" + ctx)
+                               "Usa il contesto seguente solo se pertinente alla domanda. " + rag.RAG_RULES + "\n\n" + ctx)
                 else:
                     rag_block = ("Estratti dai MIEI documenti personali (fatture, contratti, note…). "
-                                 "Sono dati miei: usali per rispondere e cita le fonti con [n]. "
-                                 "Se gli estratti non contengono la risposta, dillo.\n\n"
+                                 "Sono dati miei: usali se servono a rispondere. " + rag.RAG_RULES + "\n\n"
                                  f"<documenti>\n{ctx}\n</documenti>\n\nDomanda: ")
-                meta["sources"] = [{"n": i + 1, "name": h["name"], "score": h["score"], "text": h["text"][:400]}
+                meta["sources"] = [{"n": i + 1, "name": h["name"], "score": h["score"], "text": h["text"][:600],
+                                    "doc_id": h["doc_id"], "page": h["page"], "lang": h["lang"], "ocr": h["ocr"],
+                                    "has_original": h["has_original"], "matched": h["matched"]}
                                    for i, h in enumerate(hits)]
                 yield sse("sources", meta["sources"])
 
@@ -768,8 +908,102 @@ async def chat_stream(req: ChatIn):
     yield sse("done", {"conversation_id": cid})
 
 
+async def analysis_stream(req: ChatIn):
+    """Analisi completa di un documento: il modello lo legge tutto, a blocchi, poi unisce i risultati."""
+    s = db.get_settings()
+    model = req.model or s["llm_model"]
+    cid = req.conversation_id
+    if not cid or not db.q("SELECT id FROM conversations WHERE id=?", (cid,), one=True):
+        cid = uuid.uuid4().hex
+        db.x("INSERT INTO conversations(id, title, created_at, updated_at) VALUES(?,?,?,?)",
+             (cid, req.message.strip().replace("\n", " ")[:60] or "Analisi documento", db.now(), db.now()))
+    db.x("INSERT INTO messages(conv_id, role, content, created_at) VALUES(?,?,?,?)",
+         (cid, "user", req.message, db.now()))
+    yield sse("meta", {"conversation_id": cid, "model": model})
+    meta = {"tools": [], "sources": [], "reasoning": ""}
+    full_text = ""
+    try:
+        if not model:
+            raise ValueError("Nessun modello configurato: apri Impostazioni e seleziona un modello.")
+        _kb_required()
+        client = chat_client(s)
+        oll = await ollama_runtime(s, model)
+        ctx = int(oll.get("ctx") or s.get("context_window") or 8192)
+        off_top, off_extra, _ = thinking_params(s, "off")
+        think_off = {**off_top, **({"extra_body": off_extra} if off_extra else {})}
+        mode = req.thinking or s.get("thinking", "auto")
+        f_top, f_extra, _ = thinking_params(s, mode)
+        final_kwargs = {**f_top, **({"extra_body": f_extra} if f_extra else {})}
+        async for ev, data in analysis.run(req.message, int(req.analyze_doc_id), client, model, ctx,
+                                           think_off, final_kwargs):
+            if ev == "analysis":
+                meta["analysis"] = data
+                yield sse("analysis", data)
+            elif ev == "notice":
+                yield sse("notice", data)
+            elif ev == "text":
+                full_text = data
+                yield sse("token", {"text": data})
+            elif ev == "final_prompt":
+                kwargs = {"model": model, "stream": True, "temperature": min(float(s["temperature"]), 0.3),
+                          "max_tokens": data["max_tokens"],
+                          "messages": [{"role": "system", "content": s["system_prompt"]},
+                                       {"role": "user", "content": data["prompt"]}], **final_kwargs}
+                try:
+                    stream = await client.chat.completions.create(**kwargs)
+                except BadRequestError:
+                    for k in final_kwargs:
+                        kwargs.pop(k, None)
+                    stream = await client.chat.completions.create(**kwargs)
+                splitter = ThinkSplitter()
+                finish = None
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    finish = chunk.choices[0].finish_reason or finish
+                    d = chunk.choices[0].delta
+                    if d is None:
+                        continue
+                    r = _extra(d, "reasoning_content", "reasoning")
+                    if isinstance(r, str) and r:
+                        meta["reasoning"] += r
+                        yield sse("reasoning", {"text": r})
+                    if d.content:
+                        for kind, txt in splitter.feed(d.content):
+                            if kind == "reasoning":
+                                meta["reasoning"] += txt
+                                yield sse("reasoning", {"text": txt})
+                            else:
+                                full_text += txt
+                                yield sse("token", {"text": txt})
+                for kind, txt in splitter.flush():
+                    if kind == "reasoning":
+                        meta["reasoning"] += txt
+                        yield sse("reasoning", {"text": txt})
+                    else:
+                        full_text += txt
+                        yield sse("token", {"text": txt})
+                if finish == "length":
+                    yield sse("notice", {"text": "La risposta finale è stata tagliata perché ha esaurito lo spazio "
+                                                 "del contesto. Aumenta OLLAMA_CONTEXT_LENGTH o restringi la richiesta."})
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        meta["error"] = explain_llm_error(e, model) if not isinstance(e, (ValueError, HTTPException)) \
+            else str(getattr(e, "detail", e))
+        yield sse("error", {"text": meta["error"]})
+    finally:
+        db.x("INSERT INTO messages(conv_id, role, content, meta, created_at) VALUES(?,?,?,?,?)",
+             (cid, "assistant", full_text, json.dumps(meta, ensure_ascii=False), db.now()))
+        db.x("UPDATE conversations SET updated_at=? WHERE id=?", (db.now(), cid))
+    yield sse("done", {"conversation_id": cid})
+
+
 @app.post("/api/chat")
 async def chat(req: ChatIn):
+    if req.analyze_doc_id:
+        return StreamingResponse(analysis_stream(req), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
     return StreamingResponse(chat_stream(req), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -814,7 +1048,7 @@ def ui_background_delete():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": APP_VERSION}
+    return {"ok": True, "version": APP_VERSION, "kb": kb_state["ready"], "kb_error": kb_state["error"]}
 
 
 # ======================= Frontend =======================

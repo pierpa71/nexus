@@ -82,6 +82,13 @@
           <input type="checkbox" id="useRag" checked />
           <span><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z" /><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" /></svg>RAG</span>
         </label>
+        <div class="analyze-wrap">
+          <button class="think-chip analyze-chip" id="analyzeChip" title="Analisi completa: il modello legge TUTTO un documento, a blocchi (per tabelle ed elenchi completi, riassunti per capitolo…)">
+            <svg viewBox="0 0 24 24"><path d="M4 4h16v4H4zM4 10h16v4H4zM4 16h10v4H4z"/></svg>
+            <span id="analyzeLabel">Analisi completa</span>
+          </button>
+          <div class="analyze-pop hidden" id="analyzePop"></div>
+        </div>
         <label class="chip-toggle" title="Consenti al modello di usare i tool MCP">
           <input type="checkbox" id="useTools" checked />
           <span><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z" /></svg>Tool <b id="toolBadge">0</b></span>
@@ -108,7 +115,7 @@
           <button class="icon-btn" id="attachBtn" title="Aggiungi documenti alla knowledge base">
             <svg viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" /></svg>
           </button>
-          <input type="file" id="fileInput" multiple hidden accept=".pdf,.docx,.txt,.md,.csv,.json,.html,.htm,.xml,.yaml,.yml,.log,.py,.js,.ts,.java,.go,.sql" />
+          <input type="file" id="fileInput" multiple hidden accept=".pdf,.docx,.txt,.md,.csv,.json,.html,.htm,.xml,.yaml,.yml,.log,.py,.js,.ts,.java,.go,.sql,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp,.gif" />
           <textarea id="input" rows="1" placeholder="Scrivi un messaggio…  (Shift+Invio per andare a capo)"></textarea>
           <button class="send-btn" id="sendBtn" title="Invia">
             <svg class="i-send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg>

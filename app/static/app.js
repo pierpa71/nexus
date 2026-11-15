@@ -8,6 +8,7 @@ const ICON = {
   tool: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg>',
   check: '<svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg>',
   x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  book: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>',
   copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
   edit: '<svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
@@ -62,6 +63,34 @@ function toast(text, kind = "") {
 /* ===================== Markdown ===================== */
 const hasMd = typeof marked !== "undefined" && typeof DOMPurify !== "undefined";
 if (hasMd) marked.setOptions({ gfm: true, breaks: true });
+
+/* Citazioni [n] del modello: non vengono mostrate nel testo, ma nel riquadro "Referenze" */
+const CITE_GROUP = String.raw`\[\d+(?:\s*[-–,;]\s*\d+)*\]`;
+const CITE_PAREN = new RegExp(String.raw`\s*\((?:\s*(?:vedi|cfr\.?|fonti?:?|see|source:?)\s*)?(?:${CITE_GROUP}[\s,;]*)+(?:,?\s*(?:pag(?:\.|ina)?|p\.)\s*\d+(?:\s*[-–]\s*\d+)?)?\s*\)`, "gi");
+const CITE_BARE = new RegExp(String.raw`[ \t]*(?:${CITE_GROUP}[ \t]*)+`, "g");
+
+function stripCitations(text) {
+  // non tocca blocchi di codice e codice inline
+  return (text || "").split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/).map((seg, i) =>
+    i % 2 ? seg : seg.replace(CITE_PAREN, "").replace(CITE_BARE, (m, off, str) => {
+      const next = str[off + m.length] || "";
+      return off > 0 && /\S/.test(str[off - 1] || "") && /[\w(]/.test(next) ? " " : "";
+    })
+  ).join("");
+}
+
+function citedNumbers(text) {
+  const out = new Set();
+  const prose = (text || "").split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/).filter((_, i) => i % 2 === 0).join(" ");
+  for (const g of prose.matchAll(new RegExp(CITE_GROUP, "g"))) {
+    const body = g[0].slice(1, -1);
+    body.split(/[,;]/).forEach((part) => {
+      const [a, b] = part.split(/[-–]/).map((x) => parseInt(x, 10));
+      if (!isNaN(a)) for (let n = a; n <= (isNaN(b) ? a : Math.min(b, a + 50)); n++) out.add(n);
+    });
+  }
+  return out;
+}
 
 function renderMd(text) {
   if (!hasMd) return `<p>${esc(text).replace(/\n/g, "<br>")}</p>`;
@@ -314,8 +343,30 @@ async function loadServers() {
 async function loadDocs() {
   state.docs = await api("/api/documents");
   $("#docCount").textContent = state.docs.filter((d) => d.status === "ready").length;
-  if (state.panel === "docs") renderDocsList();
-  if (state.docs.some((d) => d.status === "processing")) setTimeout(loadDocs, 1500);
+  if (state.panel === "docs") { renderDocsList(); loadKbStatus(); }
+  clearTimeout(state.docsTimer);
+  if (state.docs.some((d) => d.status === "processing" || d.pending_embeddings > 0)) state.docsTimer = setTimeout(loadDocs, 2000);
+}
+
+const LANG = { italian: "IT", english: "EN", french: "FR", german: "DE", spanish: "ES", simple: "—" };
+const fileUrl = (docId, page) => `/api/documents/${docId}/file${page ? `#page=${page}` : ""}`;
+
+async function loadKbStatus() {
+  const el = $("#kbStatus");
+  if (!el) return;
+  try {
+    const k = await api("/api/kb/status");
+    if (!k.ready) { el.innerHTML = `<div class="err-box">Knowledge base non disponibile: ${esc(k.error || "avvio in corso…")}</div>`; return; }
+    const emb = k.embedding ? `<code>${esc(k.embedding.model)}</code> · ${k.embedding.dim} dim.` : "nessun embedding ancora calcolato";
+    let line = `${k.documents} documenti · ${k.chunks} passaggi · embedding ${emb}`;
+    if (k.pending > 0) {
+      line += k.reembed_running ? ` · <span class="spinner" style="display:inline-block;vertical-align:-2px"></span> calcolo embedding: ${k.pending} passaggi rimanenti (nel frattempo funziona la ricerca lessicale)`
+        : ` · <b style="color:var(--err)">${k.pending} passaggi senza embedding</b> <button class="btn sm" id="kbReembed">${ICON.refresh}Ricalcola ora</button>`;
+    }
+    el.innerHTML = `<small style="color:var(--faint)">${line}</small>` + (k.reembed_error ? `<div class="err-box" style="margin-top:8px">${esc(k.reembed_error)}</div>` : "");
+    const b = $("#kbReembed");
+    if (b) b.onclick = async () => { await api("/api/kb/reembed", { method: "POST" }); loadDocs(); };
+  } catch (e) { el.innerHTML = `<div class="err-box">${esc(e.message)}</div>`; }
 }
 
 async function loadConvs() {
@@ -390,6 +441,7 @@ async function openConv(id) {
       (m.meta.reasoning) && appendReasoning(v, m.meta.reasoning, true);
       (m.meta.tools || []).forEach((t) => { addToolCard(v, t); finishToolCard(v, t); });
       setAssistantText(v, m.content, true);
+      if (m.meta.analysis) renderAnalysis(v, { ...m.meta.analysis, phase: "finished" });
       if (m.meta.sources?.length) renderSources(v, m.meta.sources);
       if (m.meta.usage) renderUsage(v, m.meta.usage);
       if (m.meta.empty_reason) v.body.insertAdjacentHTML("beforeend", `<div class="notice">${esc(m.meta.empty_reason)}</div>`);
@@ -423,13 +475,13 @@ function addAssistantMsg() {
     <div class="msg-actions"><button title="Copia">${ICON.copy}</button></div></div>`;
   $("#messages").appendChild(d);
   const view = { el: d, body: $(".body", d), steps: $(".steps", d), bubble: $(".bubble", d), text: "", tools: {} };
-  $(".msg-actions button", d).onclick = () => { navigator.clipboard.writeText(view.text); toast("Copiato negli appunti", "ok"); };
+  $(".msg-actions button", d).onclick = () => { navigator.clipboard.writeText(stripCitations(view.text).trim()); toast("Copiato negli appunti", "ok"); };
   return view;
 }
 
 function setAssistantText(v, text, final = false) {
   v.text = text;
-  v.bubble.innerHTML = renderMd(text);
+  v.bubble.innerHTML = renderMd(stripCitations(text));
   v.bubble.classList.toggle("cursor", !final);
   if (final) enhanceCode(v.bubble);
 }
@@ -543,12 +595,91 @@ function renderUsage(v, u) {
 
 function renderSources(v, sources) {
   v.body.querySelector(".sources")?.remove();
+  v.sources = sources;
   const box = document.createElement("div");
   box.className = "sources";
-  box.innerHTML = sources.map((s) => `<span class="source"><b>[${s.n}]</b>${esc(s.name)} · ${(s.score * 100).toFixed(0)}%
-      <span class="tip">${esc(s.text)}…</span></span>`).join("");
+  box.innerHTML = `<button class="refs-chip" title="Mostra le referenze usate per la risposta">${ICON.book}Referenze <span>${sources.length}</span></button>`;
+  $("button", box).onclick = () => openRefs(v);
   v.body.insertBefore(box, $(".msg-actions", v.body));
 }
+
+/* ---------- Analisi completa di un documento ---------- */
+function renderAnalysis(v, a) {
+  let box = $(".analysis-box", v.body);
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "analysis-box";
+    v.steps.appendChild(box);
+  }
+  const pct = a.total ? Math.round((a.done / a.total) * 100) : 0;
+  const doc = `«${esc(a.doc || "documento")}»`;
+  const line = {
+    start: `Analisi completa di ${doc}: preparazione dei blocchi…`,
+    map: a.done ? `Lettura di ${doc}: blocco ${a.done} di ${a.total}${a.pages ? ` (${esc(a.pages)})` : ""} · risultati in ${a.found || 0} blocchi`
+      : `Lettura di ${doc}: ${a.total} blocchi da analizzare…`,
+    reduce: `Letto tutto ${doc} (${a.total} blocchi): unione dei risultati…`,
+    concat: `Letto tutto ${doc} (${a.total} blocchi): risultati uniti in ordine`,
+    finished: `Analisi completa di ${doc}: letti ${a.total} blocchi`,
+  }[a.phase] || "";
+  const running = ["start", "map", "reduce"].includes(a.phase);
+  box.innerHTML = `<div class="an-line">${running ? '<span class="spinner" style="display:inline-block;vertical-align:-2px"></span>' : ICON.check}<span>${line}</span></div>`
+    + (running && a.total ? `<div class="an-bar"><i style="width:${a.phase === "reduce" ? 100 : pct}%"></i></div>` : "");
+}
+
+function setAnalyzeDoc(doc) {
+  state.analyzeDoc = doc;
+  const chip = $("#analyzeChip");
+  chip.dataset.mode = doc ? "on" : "off";
+  $("#analyzeLabel").textContent = doc ? `Analisi: ${doc.name.length > 22 ? doc.name.slice(0, 21) + "…" : doc.name}` : "Analisi completa";
+  chip.title = doc ? `Il prossimo messaggio farà leggere al modello tutto «${doc.name}». Clic per cambiare o annullare.`
+    : "Analisi completa: il modello legge TUTTO un documento, a blocchi (per tabelle ed elenchi completi, riassunti per capitolo…)";
+  $("#input").placeholder = doc ? `Cosa vuoi ottenere da tutto «${doc.name}»? (es. una tabella con tutti gli articoli)` : "Scrivi un messaggio…  (Shift+Invio per andare a capo)";
+}
+
+function toggleAnalyzePop(force) {
+  const pop = $("#analyzePop");
+  const open = force ?? pop.classList.contains("hidden");
+  if (!open) { pop.classList.add("hidden"); return; }
+  const docs = (state.docs || []).filter((d) => d.status === "ready");
+  pop.innerHTML = `<div class="ap-head">Analisi completa<small>Il modello legge tutto il documento a blocchi e unisce i risultati. Più lenta del RAG (qualche minuto per i documenti lunghi): usala per tabelle o elenchi completi e riassunti di tutto il testo.</small></div>`
+    + (docs.length ? docs.map((d) => `<button data-id="${d.id}" class="${state.analyzeDoc?.id === d.id ? "on" : ""}"><b>${esc(d.name)}</b><small>${d.num_pages ? `${d.num_pages} pag. · ` : ""}${d.chunks} passaggi</small></button>`).join("")
+      : `<div class="empty">Nessun documento indicizzato.</div>`)
+    + (state.analyzeDoc ? `<button data-id="" class="ap-off">Annulla l'analisi completa</button>` : "");
+  $$("button", pop).forEach((b) => (b.onclick = () => {
+    const d = docs.find((x) => String(x.id) === b.dataset.id);
+    setAnalyzeDoc(d ? { id: d.id, name: d.name } : null);
+    toggleAnalyzePop(false);
+    $("#input").focus();
+  }));
+  pop.classList.remove("hidden");
+}
+
+function openRefs(v) {
+  closeRefs();
+  const cited = citedNumbers(v.text);
+  const sources = [...(v.sources || [])].sort((a, b) => (cited.has(b.n) - cited.has(a.n)) || a.n - b.n);
+  const how = { vector: "significato", keyword: "parole" };
+  const ov = document.createElement("div");
+  ov.className = "refs-overlay";
+  ov.innerHTML = `<div class="refs-modal" role="dialog" aria-modal="true" aria-label="Referenze">
+    <div class="refs-head"><h3>Referenze</h3><small>${cited.size ? `${[...cited].filter((n) => sources.some((s) => s.n === n)).length} citate nella risposta · ` : ""}${sources.length} estratti consultati</small>
+      <button class="icon-btn" data-close title="Chiudi">${ICON.x}</button></div>
+    <div class="refs-list">${sources.map((s) => {
+      const where = [s.page ? `pag. ${s.page}` : "", s.lang ? (LANG[s.lang] || s.lang) : "", s.score != null ? `${(s.score * 100).toFixed(0)}%` : "",
+        (s.matched || []).map((m) => how[m]).join(" + ")].filter(Boolean).join(" · ");
+      const name = s.has_original && s.doc_id
+        ? `<a href="${fileUrl(s.doc_id, s.page)}" target="_blank" rel="noopener" title="Apri il documento${s.page ? ` a pagina ${s.page}` : ""}">${esc(s.name)} ↗</a>` : esc(s.name);
+      return `<div class="ref ${cited.has(s.n) ? "cited" : ""}"><div class="ref-top"><b class="ref-n">${s.n}</b><span class="ref-name">${name}</span>
+          ${cited.has(s.n) ? `<span class="ref-badge">citata</span>` : ""}${s.ocr ? `<span class="badge-ocr" title="Testo ottenuto con l'OCR: può contenere errori">OCR</span>` : ""}</div>
+        ${where ? `<div class="ref-meta">${esc(where)}</div>` : ""}
+        <div class="ref-text">${esc(s.text)}${(s.text || "").length >= 400 ? "…" : ""}</div></div>`;
+    }).join("")}</div></div>`;
+  ov.onclick = (e) => { if (e.target === ov || e.target.closest("[data-close]")) closeRefs(); };
+  document.body.appendChild(ov);
+  $("[data-close]", ov).focus();
+}
+
+function closeRefs() { $(".refs-overlay")?.remove(); }
 
 /* ===================== Invio / streaming ===================== */
 function setBusy(b) {
@@ -573,6 +704,8 @@ async function send(textArg) {
   addUserMsg(text);
   const v = addAssistantMsg();
   showTyping(v, true);
+  const analyzing = state.analyzeDoc;
+  if (analyzing) renderAnalysis(v, { phase: "start", done: 0, total: 0, doc: analyzing.name });
   scrollBottom(true);
   setBusy(true);
   state.userAborted = false;
@@ -594,8 +727,10 @@ async function send(textArg) {
         model: $("#modelSelect").value || null,
         thinking: state.settings.thinking || "auto",
         web_search: $("#useWeb").checked,
+        analyze_doc_id: analyzing?.id || null,
       }),
     });
+    if (analyzing) setAnalyzeDoc(null);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -626,6 +761,10 @@ async function send(textArg) {
             break;
           case "sources":
             renderSources(v, data);
+            break;
+          case "analysis":
+            renderAnalysis(v, data);
+            scrollBottom();
             break;
           case "tool_call":
             addToolCard(v, data);
@@ -816,7 +955,21 @@ function renderSettings() {
           <option value="user" ${s.rag_inject !== "system" ? "selected" : ""}>Nel messaggio dell'utente (consigliato: i modelli lo seguono meglio)</option>
           <option value="system" ${s.rag_inject === "system" ? "selected" : ""}>Nel prompt di sistema</option>
         </select></div>
-      <div class="field"><label>Soglia minima di similarità: <b id="minVal">${s.rag_min_score}</b></label><input type="range" min="0" max="0.9" step="0.01" id="s_rag_min_score" value="${s.rag_min_score}" /></div>
+      <div class="field"><label>Soglia minima di similarità: <b id="minVal">${s.rag_min_score}</b></label><input type="range" min="0" max="0.9" step="0.01" id="s_rag_min_score" value="${s.rag_min_score}" />
+        <small>Vale per la ricerca semantica: i passaggi che contengono le parole esatte della domanda (codici, numeri, nomi) restano comunque.</small></div>
+      <div class="field"><label>Lingue dei documenti</label>
+        <div class="inp-group" id="kbLangs" style="flex-wrap:wrap;gap:12px">${["italian", "english", "french", "german", "spanish"].map((l) =>
+          `<label class="check" style="margin:0"><input type="checkbox" value="${l}" ${(s.kb_languages || []).includes(l) ? "checked" : ""}><span><b>${LANG[l]}</b></span></label>`).join("")}</div>
+        <small>Riconosciute per ogni passaggio; servono per lo stemming della ricerca per parole e per l'OCR. Con documenti in più lingue usa un modello di embedding multilingue (<code>bge-m3</code>).</small></div>
+      <div class="row3">
+        <div class="field"><label>Lingua di riserva</label><select class="inp" id="s_kb_fallback_language">${["italian", "english", "french", "german", "spanish"].map((l) => `<option value="${l}" ${s.kb_fallback_language === l ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        <div class="field"><label>OCR (Tesseract)</label><select class="inp" id="s_ocr_mode">
+          <option value="auto" ${s.ocr_mode === "auto" ? "selected" : ""}>Auto — scansioni e immagini</option>
+          <option value="always" ${s.ocr_mode === "always" ? "selected" : ""}>Sempre — tutte le pagine</option>
+          <option value="off" ${s.ocr_mode === "off" ? "selected" : ""}>Disattivato</option></select></div>
+        <div class="field"><label>Pagine OCR in parallelo</label><input class="inp" type="number" min="1" max="16" id="s_ocr_workers" value="${s.ocr_workers}" /></div>
+      </div>
+      <div class="field"><label>Candidati per la fusione (per ramo)</label><input class="inp" type="number" min="5" max="200" id="s_rag_candidates" value="${s.rag_candidates}" style="max-width:120px" /></div>
     </div>
     <div class="actions"><button class="btn primary" id="saveSettings">${ICON.check}Salva impostazioni</button></div>`;
 
@@ -836,6 +989,8 @@ function renderSettings() {
       const k = el.id.slice(2);
       out[k] = el.type === "checkbox" ? el.checked : (num.includes(k) || el.type === "number" || el.type === "range") ? Number(el.value) : el.value;
     });
+    const langs = $$("#kbLangs input:checked").map((i) => i.value);
+    if (langs.length) out.kb_languages = langs;
     return out;
   };
   const save = async (silent) => {
@@ -879,7 +1034,7 @@ function renderSettings() {
     try {
       await save(true);
       const r = await api("/api/embeddings/test", { method: "POST" });
-      out.innerHTML = r.ok ? `<span style="color:var(--ok)">✓ ${esc(r.model)} funziona (${r.dim} dimensioni)</span>`
+      out.innerHTML = r.ok ? `<span style="color:var(--ok)">✓ ${esc(r.model)} funziona (${r.dim} dimensioni)</span>` + (r.reembed ? `<br><span>L'archivio usa <code>${esc(r.archive.model)}</code>: gli embedding verranno ricalcolati in background dai testi già estratti (niente da ricaricare).</span>` : "")
         : `<span style="color:var(--err)">${esc(r.error)}</span>`;
     } catch (e) { out.innerHTML = `<span style="color:var(--err)">${esc(e.message)}</span>`; }
   };
@@ -1153,15 +1308,19 @@ function renderDocs() {
   $("#drawerBody").innerHTML = `
     <div class="section"><h3>Carica documenti</h3>
       <div class="dropzone" id="dz">${ICON.upload}<div><b>Trascina qui i file</b> o clicca per selezionarli</div>
-        <small style="color:var(--faint)">PDF, DOCX, TXT, MD, CSV, HTML, JSON, codice sorgente…</small></div>
-      <small style="display:block;color:var(--faint);margin-top:8px">Modello di embedding: <code>${esc(state.settings.embed_model)}</code></small></div>
-    <div class="section"><h3>Prova la ricerca semantica</h3>
+        <small style="color:var(--faint)">PDF (anche scansionati), DOCX, immagini e foto (OCR), TXT, MD, CSV, HTML, JSON, codice…</small></div>
+      <div class="inp-group" style="margin-top:10px;align-items:center"><label style="font-size:13px;color:var(--muted)">Lingua dei documenti</label>
+        <select class="inp" id="upLang" style="max-width:200px"><option value="auto">Riconoscimento automatico</option>
+          ${(state.settings.kb_languages || []).map((l) => `<option value="${l}">${LANG[l] || l} — forza ${l}</option>`).join("")}</select></div>
+      <div id="kbStatus" style="margin-top:8px"></div></div>
+    <div class="section"><h3>Prova la ricerca</h3>
+      <small style="display:block;color:var(--faint);margin-bottom:8px">Ricerca ibrida: significato (embedding) + parole esatte, codici e numeri (full-text).</small>
       <div class="inp-group"><input class="inp" id="ragQ" placeholder="Scrivi una domanda…"><button class="btn" id="ragGo">${ICON.search}Cerca</button></div>
       <div class="search-results" id="ragRes" style="margin-top:10px"></div></div>
     <div class="section"><h3>Documenti indicizzati</h3>
       <div class="inp-group" style="margin-bottom:12px;justify-content:flex-end">
         <button class="btn sm" id="retryErr">${ICON.refresh}Riprova quelli in errore</button>
-        <button class="btn sm" id="reindexAll" title="Da usare dopo aver cambiato modello di embedding o dimensione dei chunk">${ICON.refresh}Reindicizza tutto</button>
+        <button class="btn sm" id="reindexAll" title="Ripete estrazione, OCR e suddivisione: serve dopo aver cambiato dimensione dei chunk, lingue o OCR. Il cambio di modello di embedding invece è gestito da solo.">${ICON.refresh}Reindicizza tutto</button>
       </div><div id="docList"></div></div>`;
   const dz = $("#dz");
   dz.onclick = () => $("#fileInput").click();
@@ -1173,9 +1332,13 @@ function renderDocs() {
     if (!q) return;
     $("#ragRes").innerHTML = '<span class="spinner"></span>';
     try {
-      const hits = await api("/api/rag/search", { method: "POST", body: { query: q } });
-      $("#ragRes").innerHTML = hits.length ? hits.map((h) => `<div class="hit"><div class="hh"><span>${esc(h.name)} · chunk ${h.idx}</span><b>${(h.score * 100).toFixed(1)}%</b></div><div class="hb">${esc(h.text)}</div></div>`).join("")
-        : `<div class="empty">Nessun risultato</div>`;
+      const { hits, notices } = await api("/api/rag/search", { method: "POST", body: { query: q } });
+      const how = { vector: "significato", keyword: "parole" };
+      $("#ragRes").innerHTML = (notices || []).map((n) => `<div class="notice" style="margin-bottom:8px">${esc(n)}</div>`).join("") + (hits.length ? hits.map((h) => {
+        const where = `${esc(h.name)}${h.page ? ` · pag. ${h.page}` : ""} · ${LANG[h.lang] || esc(h.lang)}${h.ocr ? ` · <span class="badge-ocr">OCR</span>` : ""}`;
+        const link = h.has_original ? `<a href="${fileUrl(h.doc_id, h.page)}" target="_blank" rel="noopener">${where}</a>` : where;
+        return `<div class="hit"><div class="hh"><span>${link}</span><b title="Trovato per: ${h.matched.map((m) => how[m]).join(" + ")}">${h.score != null ? (h.score * 100).toFixed(1) + "%" : "parole"} · ${h.matched.map((m) => how[m]).join("+")}</b></div><div class="hb">${esc(h.text)}</div></div>`;
+      }).join("") : `<div class="empty">Nessun risultato</div>`);
     } catch (e) { $("#ragRes").innerHTML = `<div class="err-box">${esc(e.message)}</div>`; }
   };
   $("#ragGo").onclick = go;
@@ -1189,6 +1352,7 @@ function renderDocs() {
   $("#reindexAll").onclick = () => reidx(false);
   $("#ragQ").onkeydown = (e) => e.key === "Enter" && go();
   renderDocsList();
+  loadKbStatus();
 }
 
 function fmtSize(b) { return b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : b > 1e3 ? (b / 1e3).toFixed(0) + " KB" : b + " B"; }
@@ -1199,17 +1363,34 @@ function renderDocsList() {
   if (!state.docs.length) { el.innerHTML = `<div class="empty">Nessun documento. Caricane uno per abilitare il RAG.</div>`; return; }
   el.innerHTML = state.docs.map((d) => {
     const ext = (d.name.split(".").pop() || "").slice(0, 4);
-    const meta = d.status === "processing" ? `<span class="spinner" style="display:inline-block;vertical-align:-2px"></span> Indicizzazione in corso…`
-      : d.status === "error" ? esc(d.error) : `${d.chunks} chunk · ${fmtSize(d.size)} · ${esc(d.embed_model)}`;
+    const parts = [];
+    if (d.num_pages) parts.push(`${d.num_pages} pag.`);
+    parts.push(`${d.chunks} passaggi`);
+    if (d.size) parts.push(fmtSize(d.size));
+    if ((d.languages || []).length) parts.push(d.languages.map((l) => LANG[l] || l).join("+") + (d.forced_lang ? " (forzata)" : ""));
+    if (d.ocr_pages) parts.push(`<span class="badge-ocr" title="Pagine riconosciute con l'OCR">OCR ${d.ocr_pages} pag.</span>`);
+    if (d.source === "tabularium") parts.push("da Tabularium");
+    if (d.pending_embeddings) parts.push(`embedding: ${d.pending_embeddings} in attesa`);
+    const meta = d.status === "processing" ? `<span class="spinner" style="display:inline-block;vertical-align:-2px"></span> Indicizzazione in corso… (le scansioni richiedono l'OCR: 1–3 s per pagina)`
+      : d.status === "error" ? esc(d.error) : parts.join(" · ");
+    const nm = d.has_original ? `<a href="${fileUrl(d.id)}" target="_blank" rel="noopener" title="Apri ${esc(d.name)}">${esc(d.name)}</a>` : esc(d.name);
     return `<div class="doc" data-id="${d.id}"><div class="ext">${esc(ext)}</div>
-      <div class="info"><div class="nm" title="${esc(d.name)}">${esc(d.name)}</div><div class="mt ${d.status === "error" ? "err" : ""}">${meta}</div></div>
+      <div class="info"><div class="nm" title="${esc(d.name)}">${nm}</div><div class="mt ${d.status === "error" ? "err" : ""}">${meta}</div></div>
       ${d.status === "error" ? `<button class="btn sm" data-retry>${ICON.refresh}Riprova</button>` : ""}
+      ${d.status === "ready" ? `<button class="btn sm" data-analyze title="Fai leggere al modello tutto il documento (analisi completa)">Analizza</button>` : ""}
       <label class="switch" title="Includi nella ricerca"><input type="checkbox" ${d.enabled ? "checked" : ""}><span></span></label>
       <button class="icon-btn" data-del title="Elimina">${ICON.trash}</button></div>`;
   }).join("");
   $$(".doc", el).forEach((row) => {
     const id = row.dataset.id;
     $("input", row).onchange = (e) => api(`/api/documents/${id}`, { method: "PATCH", body: { enabled: e.target.checked } });
+    const an = $("[data-analyze]", row);
+    if (an) an.onclick = () => {
+      const d = state.docs.find((x) => String(x.id) === id);
+      setAnalyzeDoc({ id: d.id, name: d.name });
+      closePanel();
+      $("#input").focus();
+    };
     const retry = $("[data-retry]", row);
     if (retry) retry.onclick = async () => { await api(`/api/documents/${id}/reindex`, { method: "POST" }); loadDocs(); };
     $("[data-del]", row).onclick = async () => {
@@ -1226,12 +1407,15 @@ async function uploadFiles(files) {
   if (!list.length) return;
   const fd = new FormData();
   list.forEach((f) => fd.append("files", f));
+  fd.append("language", $("#upLang")?.value || "auto");
   const names = list.map((f) => f.name);
   toast(`Caricamento di ${names.length === 1 ? `«${names[0]}»` : `${names.length} file`}…`);
   try {
     const res = await api("/api/documents", { method: "POST", body: fd });
-    const n = Array.isArray(res) ? res.length : list.length;
-    toast(n === 1 ? `«${res[0]?.name || names[0]}» caricato: indicizzazione in corso` : `${n} file caricati: indicizzazione in corso`, "ok");
+    const dup = res.filter((r) => r.status === "duplicate");
+    const fresh = res.filter((r) => r.status === "processing" || r.status === "retry");
+    dup.forEach((r) => toast(`«${r.name}» è già nella knowledge base${r.existing && r.existing !== r.name ? ` (come «${r.existing}»)` : ""}`));
+    if (fresh.length) toast(fresh.length === 1 ? `«${fresh[0].name}» caricato: indicizzazione in corso` : `${fresh.length} file caricati: indicizzazione in corso`, "ok");
     loadDocs();
   } catch (e) { toast(`Caricamento non riuscito: ${e.message}`, "err"); }
 }
@@ -1249,8 +1433,10 @@ function bindUI() {
   $$(".side-nav button").forEach((b) => (b.onclick = () => { openPanel(b.dataset.panel); $("#sidebar").classList.remove("open"); }));
   $("#drawerClose").onclick = closePanel;
   $("#drawerBackdrop").onclick = closePanel;
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePanel(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { if ($(".refs-overlay")) closeRefs(); else closePanel(); } });
   $("#thinkChip").onclick = () => cycleThinking().catch((e) => toast(e.message, "err"));
+  $("#analyzeChip").onclick = (e) => { e.stopPropagation(); toggleAnalyzePop(); };
+  document.addEventListener("click", (e) => { if (!e.target.closest(".analyze-wrap")) toggleAnalyzePop(false); });
   $("#useWeb").onchange = async (e) => {
     try {
       state.settings = await api("/api/settings", { method: "PUT", body: { web_search_enabled: e.target.checked } });
