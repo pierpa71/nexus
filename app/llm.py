@@ -46,3 +46,27 @@ async def ollama_runtime(settings, model: str) -> dict:
     except Exception:  # noqa: BLE001
         _is_ollama[root] = False
         return {"ollama": False, "ctx": None}
+
+
+_caps: dict = {}
+
+
+async def ollama_capabilities(settings, model: str) -> list | None:
+    """Capacità dichiarate da Ollama per il modello (es. ["completion", "vision", "tools"]).
+    None se l'endpoint non è Ollama o la versione non le espone."""
+    root = _root(settings["llm_base_url"])
+    if _is_ollama.get(root) is False or not model:
+        return None
+    key = (root, model)
+    if key in _caps:
+        return _caps[key]
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.post(root + "/api/show", json={"model": model})
+        caps = r.json().get("capabilities") if r.status_code == 200 else None
+    except Exception:  # noqa: BLE001
+        return None
+    caps = caps if isinstance(caps, list) else None
+    if caps is not None:
+        _caps[key] = caps
+    return caps

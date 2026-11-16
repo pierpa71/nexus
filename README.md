@@ -31,6 +31,7 @@ Con Ollama sull'host ricordati di scaricare i modelli: `ollama pull llama3.1` (o
 | **Thinking** | Pulsante **Thinking** nella barra in alto: *Auto* (decide il modello), *On* (forzato, con intensità low/medium/high), *Off* (disattivato, risposte più rapide). Nelle Impostazioni scegli i metodi in base al backend (vedi sotto). I blocchi `<think>…</think>` restituiti dentro il testo vengono separati e mostrati nel riquadro "Ragionamento". |
 | **Aspetto** | Pannello *Aspetto* con anteprima dal vivo: tema scuro/chiaro/automatico, 7 palette di colori o colori personalizzati, sfondo (aurora animata o ferma, gradiente, tinta unita, immagine caricata con oscuramento regolabile), carattere e dimensione del testo, angoli, densità, larghezza della chat, stile dei messaggi, trasparenza dei pannelli, grana e animazioni. Le preferenze sono salvate sul server e nel browser. |
 | **Chat** | Streaming, Markdown con evidenziazione del codice, visualizzazione del "ragionamento" per i modelli che lo espongono (qwen3, deepseek-r1…), stop della generazione, cronologia con ricerca, rinomina ed eliminazione. |
+| **Immagini** | Allega foto e immagini (JPG, PNG, GIF, WebP, BMP, TIFF, AVIF) a un messaggio con il pulsante 🖼, incollandole (Cmd/Ctrl+V) o trascinandole sul campo di testo: il modello le **vede** e ne interpreta il contenuto. Serve un modello *vision* (es. gemma3, qwen2.5vl, llama3.2-vision, llava, minicpm-v); con Ollama Nexus lo verifica e avvisa se il modello scelto non le supporta. Le immagini vengono raddrizzate (EXIF), ridotte a 1536 px sul lato lungo e restano nello storico per le domande successive. Per indicizzare un'immagine nella knowledge base (OCR) usa invece la graffetta. |
 | **Offline** | Tutte le librerie frontend sono incluse nell'immagine: funziona anche in reti isolate (il font Inter viene caricato da Google se raggiungibile, altrimenti si usa il font di sistema). |
 
 ## Knowledge base
@@ -199,6 +200,7 @@ app/
   kbdb.py         PostgreSQL + pgvector: schema, documenti, passaggi, query vettoriali e full-text
   parsing.py      estrazione testo per pagina (PDF, DOCX, HTML, testo) e chunking
   ocr.py          OCR Tesseract di scansioni e immagini
+  images.py       immagini allegate ai messaggi per i modelli vision
   language.py     riconoscimento della lingua per passaggio
   cli.py          riga di comando: ingest, search, list, delete, reembed, import-tabularium
   db.py           schema SQLite e impostazioni

@@ -33,6 +33,7 @@ const state = {
   busy: false,
   abort: null,
   panel: null,
+  attachments: [], // immagini da inviare con il prossimo messaggio: {name, preview, id, url}
 };
 
 /* ===================== API ===================== */
@@ -435,7 +436,7 @@ async function openConv(id) {
   $("#messages").innerHTML = "";
   $("#welcome").classList.add("hidden");
   conv.messages.forEach((m) => {
-    if (m.role === "user") addUserMsg(m.content);
+    if (m.role === "user") addUserMsg(m.content, (m.meta?.images || []).map((i) => `/api/chat/images/${i.id}`));
     else {
       const v = addAssistantMsg();
       (m.meta.reasoning) && appendReasoning(v, m.meta.reasoning, true);
@@ -461,10 +462,13 @@ function scrollBottom(force = false) {
   if (force || c.scrollHeight - c.scrollTop - c.clientHeight < 160) c.scrollTop = c.scrollHeight;
 }
 
-function addUserMsg(text) {
+function addUserMsg(text, imageUrls = []) {
   const d = document.createElement("div");
   d.className = "msg user";
-  d.innerHTML = `<div class="avatar">Tu</div><div class="body"><div class="bubble">${esc(text)}</div></div>`;
+  const imgs = imageUrls.length
+    ? `<div class="msg-images">${imageUrls.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Immagine allegata" loading="lazy"></a>`).join("")}</div>`
+    : "";
+  d.innerHTML = `<div class="avatar">Tu</div><div class="body">${imgs}${text ? `<div class="bubble">${esc(text)}</div>` : ""}</div>`;
   $("#messages").appendChild(d);
 }
 
@@ -697,11 +701,15 @@ async function send(textArg) {
   if (state.busy) return; // Invio durante la generazione non interrompe: per fermare usa il pulsante ■
   const input = $("#input");
   const text = (textArg ?? input.value).trim();
-  if (!text) return;
+  if (state.attachments.some((a) => !a.id)) { toast("Attendi il caricamento delle immagini"); return; }
+  const imgs = textArg === undefined ? state.attachments.filter((a) => a.id) : [];
+  if (!text && !imgs.length) return;
+  if (imgs.length && state.analyzeDoc) { toast("L'analisi completa di un documento non usa immagini: rimuovile o annulla l'analisi"); return; }
   input.value = "";
   autoGrow();
   $("#welcome").classList.add("hidden");
-  addUserMsg(text);
+  addUserMsg(text, imgs.map((a) => a.url));
+  if (imgs.length) clearAttachments();
   const v = addAssistantMsg();
   showTyping(v, true);
   const analyzing = state.analyzeDoc;
@@ -721,6 +729,7 @@ async function send(textArg) {
       signal: state.abort.signal,
       body: JSON.stringify({
         message: text,
+        images: imgs.map((a) => a.id),
         conversation_id: state.convId,
         use_rag: $("#useRag").checked,
         use_tools: $("#useTools").checked,
@@ -1420,6 +1429,52 @@ async function uploadFiles(files) {
   } catch (e) { toast(`Caricamento non riuscito: ${e.message}`, "err"); }
 }
 
+/* ===================== Immagini allegate al messaggio ===================== */
+const isImage = (f) => f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|tiff?|avif)$/i.test(f.name);
+
+function renderAttachments() {
+  const strip = $("#attachStrip");
+  strip.classList.toggle("hidden", !state.attachments.length);
+  strip.innerHTML = state.attachments.map((a, i) =>
+    `<div class="att-thumb${a.id ? "" : " loading"}" title="${esc(a.name)}"><img src="${esc(a.preview || a.url)}" alt="${esc(a.name)}">` +
+    `<button data-i="${i}" title="Rimuovi">${ICON.x}</button></div>`).join("");
+  $$("button", strip).forEach((b) => (b.onclick = () => removeAttachment(+b.dataset.i)));
+}
+
+function removeAttachment(i) {
+  const [a] = state.attachments.splice(i, 1);
+  if (a?.preview) URL.revokeObjectURL(a.preview);
+  if (a?.id) fetch(`/api/chat/images/${a.id}`, { method: "DELETE" }).catch(() => {});
+  renderAttachments();
+}
+
+function clearAttachments(revoke = true) {
+  if (revoke) state.attachments.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
+  state.attachments = [];
+  renderAttachments();
+}
+
+async function addImages(files) {
+  files = [...files].filter(isImage);
+  if (!files.length) return;
+  await Promise.all(files.map(async (f) => {
+    const it = { name: f.name || "immagine", preview: URL.createObjectURL(f), id: null };
+    state.attachments.push(it);
+    renderAttachments();
+    const fd = new FormData();
+    fd.append("files", f, f.name || "immagine.png");
+    try {
+      const r = await api("/api/chat/images", { method: "POST", body: fd });
+      const up = r.images[0];
+      if (up) { it.id = up.id; it.url = up.url; }
+      (r.errors || []).forEach((e) => toast(e, "err"));
+    } catch (e) { toast(`Immagine non caricata: ${e.message}`, "err"); }
+    const i = state.attachments.indexOf(it);
+    if (!it.id && i >= 0) removeAttachment(i);
+    else renderAttachments();
+  }));
+}
+
 /* ===================== Binding ===================== */
 function bindUI() {
   $("#newChat").onclick = newChat;
@@ -1449,12 +1504,25 @@ function bindUI() {
     state.settings = await api("/api/settings", { method: "PUT", body: { llm_model: e.target.value } });
     toast(`Modello: ${e.target.value}`, "ok");
   };
+  $("#imageBtn").onclick = () => $("#imageInput").click();
+  $("#imageInput").onchange = (e) => { addImages(e.target.files); e.target.value = ""; };
+  $("#input").addEventListener("paste", (e) => {
+    const files = [...(e.clipboardData?.files || [])].filter(isImage);
+    if (files.length) { e.preventDefault(); addImages(files); }
+  });
   $("#attachBtn").onclick = () => $("#fileInput").click();
   $("#fileInput").onchange = (e) => { uploadFiles(e.target.files); e.target.value = ""; };
   const comp = $("#composer");
   comp.ondragover = (e) => { e.preventDefault(); comp.classList.add("drag"); };
   comp.ondragleave = () => comp.classList.remove("drag");
-  comp.ondrop = (e) => { e.preventDefault(); comp.classList.remove("drag"); uploadFiles(e.dataTransfer.files); };
+  comp.ondrop = (e) => {
+    e.preventDefault(); comp.classList.remove("drag");
+    // immagini → allegate al messaggio; altri file → knowledge base
+    const files = [...e.dataTransfer.files];
+    const imgs = files.filter(isImage), others = files.filter((f) => !isImage(f));
+    if (imgs.length) addImages(imgs);
+    if (others.length) uploadFiles(others);
+  };
 }
 
 init().catch((e) => toast(e.message, "err"));

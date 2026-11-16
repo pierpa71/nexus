@@ -111,11 +111,16 @@
       </section>
 
       <footer class="composer-wrap">
+        <div class="attach-strip hidden" id="attachStrip"></div>
         <div class="composer" id="composer">
           <button class="icon-btn" id="attachBtn" title="Aggiungi documenti alla knowledge base">
             <svg viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" /></svg>
           </button>
           <input type="file" id="fileInput" multiple hidden accept=".pdf,.docx,.txt,.md,.csv,.json,.html,.htm,.xml,.yaml,.yml,.log,.py,.js,.ts,.java,.go,.sql,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp,.gif" />
+          <button class="icon-btn" id="imageBtn" title="Allega immagini al messaggio (puoi anche incollarle o trascinarle qui)">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="2" /><path d="m21 16-5-5-9 9" /></svg>
+          </button>
+          <input type="file" id="imageInput" multiple hidden accept="image/*" />
           <textarea id="input" rows="1" placeholder="Scrivi un messaggio…  (Shift+Invio per andare a capo)"></textarea>
           <button class="send-btn" id="sendBtn" title="Invia">
             <svg class="i-send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg>

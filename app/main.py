@@ -12,10 +12,10 @@ from fastapi.staticfiles import StaticFiles
 from openai import BadRequestError
 from pydantic import BaseModel
 
-from . import analysis, db, entities, kbdb, mcp_client, rag, websearch
-from .llm import chat_client, ollama_runtime
+from . import analysis, db, entities, images, kbdb, mcp_client, rag, websearch
+from .llm import chat_client, ollama_capabilities, ollama_runtime
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 app = FastAPI(title="Nexus Chat", version=APP_VERSION)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 for _noisy in ("pypdf", "httpx", "httpx2", "httpcore"):
@@ -420,13 +420,47 @@ def conv_rename(cid: str, data: dict):
 
 @app.delete("/api/conversations/{cid}")
 def conv_delete(cid: str):
+    for r in db.q("SELECT meta FROM messages WHERE conv_id=? AND role='user'", (cid,)):
+        images.delete([i.get("id") for i in json.loads(r["meta"] or "{}").get("images") or []])
     db.x("DELETE FROM conversations WHERE id=?", (cid,))
     return {"ok": True}
 
 
+# ======================= Immagini allegate alla chat =======================
+@app.post("/api/chat/images")
+async def chat_images_upload(files: list[UploadFile] = File(...)):
+    out, errors = [], []
+    for f in files:
+        try:
+            out.append(await asyncio.to_thread(images.save, await f.read(), f.filename or "immagine"))
+        except ValueError as e:
+            errors.append(str(e))
+    if errors and not out:
+        raise HTTPException(400, "; ".join(errors))
+    return {"images": out, "errors": errors}
+
+
+@app.delete("/api/chat/images/{iid}")
+def chat_image_delete(iid: str):
+    """Rimuove un'immagine caricata ma non inviata (tolta dal composer). Quelle già nei messaggi restano."""
+    if images.original_path(iid) and not db.q("SELECT 1 FROM messages WHERE role='user' AND meta LIKE ?",
+                                               (f"%{iid}%",), one=True):
+        images.delete([iid])
+    return {"ok": True}
+
+
+@app.get("/api/chat/images/{iid}")
+def chat_image(iid: str):
+    p = images.original_path(iid)
+    if not p:
+        raise HTTPException(404)
+    return FileResponse(p, headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
 # ======================= Chat =======================
 class ChatIn(BaseModel):
-    message: str
+    message: str = ""
+    images: list[str] | None = None  # id restituiti da /api/chat/images
     conversation_id: str | None = None
     use_rag: bool = True
     use_tools: bool = True
@@ -453,6 +487,10 @@ def explain_llm_error(e: Exception, model: str) -> str:
                 "RAM/VRAM. Riduci OLLAMA_CONTEXT_LENGTH (es. 8192), imposta OLLAMA_NUM_PARALLEL=1, usa un modello "
                 "più piccolo o più quantizzato, oppure disattiva i tool non necessari per accorciare il prompt.\n\n"
                 f"Dettaglio: {raw[:300]}")
+    if any(k in low for k in ("image", "vision", "multimodal", "image_url")) and \
+            any(k in low for k in ("support", "not ", "invalid", "unknown", "unexpected")):
+        return (f"Il modello '{model}' non sembra accettare immagini. Scegli un modello vision (es. gemma3, "
+                f"qwen2.5vl, llama3.2-vision, llava, minicpm-v).\n\nDettaglio: {raw[:300]}")
     if "model" in low and "not found" in low:
         return f"Il modello '{model}' non è installato sull'endpoint (con Ollama: ollama pull {model}).\n\nDettaglio: {raw[:300]}"
     return raw
@@ -471,10 +509,11 @@ def now_line() -> str:
 
 
 def est_tokens(obj) -> int:
-    return int(len(json.dumps(obj, ensure_ascii=False)) / 3.5)
+    clean, n_img = images.strip_for_estimate(obj)
+    return int(len(json.dumps(clean, ensure_ascii=False)) / 3.5) + n_img * images.TOKENS_PER_IMAGE
 
 
-def build_history(rows, mapping, s, budget):
+def build_history(rows, mapping, s, budget, with_images=True):
     """Ricostruisce lo storico per il modello. Per le risposte che avevano usato dei tool include le
     chiamate e un estratto dei risultati, così il modello continua a usarli invece di imitare risposte
     date "a memoria". Elimina i turni più vecchi finché lo storico non rientra nel budget di token."""
@@ -483,12 +522,17 @@ def build_history(rows, mapping, s, budget):
     max_chars = int(s.get("history_tool_result_chars") or 600)
     turns, cur = [], []
     for r in rows:
+        meta = json.loads(r.get("meta") or "{}")
         if r["role"] == "user":
             if cur:
                 turns.append(cur)
-            cur = [{"role": "user", "content": r["content"]}]
+            ids = [i.get("id") for i in meta.get("images") or []]
+            if ids and not with_images:
+                cur = [{"role": "user", "content": (r["content"] + f" [{len(ids)} immagine/i allegata/e, "
+                                                    "non visibile/i con questo modello]").strip()}]
+            else:
+                cur = [{"role": "user", "content": images.content_parts(r["content"], ids)}]
             continue
-        meta = json.loads(r.get("meta") or "{}")
         msgs = []
         used = meta.get("tools") or []
         if used and keep_tools:
@@ -593,15 +637,19 @@ async def chat_stream(req: ChatIn):
     s = db.get_settings()
     model = req.model or s["llm_model"]
     cid = req.conversation_id
+    img_meta = []
+    for iid in req.images or []:
+        if images.original_path(iid):
+            img_meta.append({"id": iid})
     if not cid or not db.q("SELECT id FROM conversations WHERE id=?", (cid,), one=True):
         cid = uuid.uuid4().hex
-        title = req.message.strip().replace("\n", " ")[:60] or "Nuova chat"
+        title = req.message.strip().replace("\n", " ")[:60] or ("Immagine" if img_meta else "Nuova chat")
         db.x("INSERT INTO conversations(id, title, created_at, updated_at) VALUES(?,?,?,?)",
              (cid, title, db.now(), db.now()))
     hist_rows = db.q("SELECT role, content, meta FROM messages WHERE conv_id=? AND role IN ('user','assistant') "
                      "ORDER BY id DESC LIMIT ?", (cid, max(0, int(s.get("history_max_messages") or 20))))[::-1]
-    db.x("INSERT INTO messages(conv_id, role, content, created_at) VALUES(?,?,?,?)",
-         (cid, "user", req.message, db.now()))
+    db.x("INSERT INTO messages(conv_id, role, content, meta, created_at) VALUES(?,?,?,?,?)",
+         (cid, "user", req.message, json.dumps({"images": img_meta} if img_meta else {}), db.now()))
     yield sse("meta", {"conversation_id": cid, "model": model})
 
     meta = {"tools": [], "sources": [], "reasoning": ""}
@@ -613,10 +661,25 @@ async def chat_stream(req: ChatIn):
             raise ValueError("Nessun modello configurato: apri Impostazioni e seleziona un modello.")
         system = s["system_prompt"] + "\n\n" + now_line()
 
+        # ---- Immagini: servono un modello vision ----
+        hist_has_img = any('"images"' in (r.get("meta") or "") for r in hist_rows if r["role"] == "user")
+        vision = True
+        if img_meta or hist_has_img:
+            caps = await ollama_capabilities(s, model)
+            vision = caps is None or "vision" in caps
+            if img_meta and not vision:
+                raise ValueError(f"Il modello '{model}' non supporta le immagini. Scegli un modello vision "
+                                 "(es. gemma3, qwen2.5vl, llama3.2-vision, llava, minicpm-v) e riprova.")
+        if req.images and len(img_meta) < len(req.images):
+            yield sse("notice", {"text": "Alcune immagini allegate non sono più disponibili e non sono state inviate."})
+        auto_prompt = not req.message.strip() and bool(img_meta)
+        if auto_prompt:
+            req.message = "Descrivi questa immagine." if len(img_meta) == 1 else "Descrivi queste immagini."
+
         # ---- RAG ----
         if req.use_rag and not kb_state["ready"] and kb_state["error"]:
             yield sse("notice", {"text": f"Knowledge base non disponibile: {kb_state['error']}"})
-        if req.use_rag and kb_state["ready"] and await kbdb.has_searchable():
+        if req.use_rag and not auto_prompt and kb_state["ready"] and await kbdb.has_searchable():
             notices = []
             try:
                 hits = await rag.search(req.message, s["rag_top_k"], float(s["rag_min_score"]), req.document_ids,
@@ -671,13 +734,14 @@ async def chat_stream(req: ChatIn):
                         "il nome esatto dell'entità. Quando lo strumento conferma il successo, NON ripetere l'azione "
                         "e non fare altre chiamate: rispondi. Non dire mai di aver eseguito un'azione che non hai "
                         "eseguito con uno strumento.)")
-        current = {"role": "user", "content": rag_block + req.message + reminder + think_tag}
+        current = {"role": "user", "content": images.content_parts(rag_block + req.message + reminder + think_tag,
+                                                                   [i["id"] for i in img_meta])}
         oll = await ollama_runtime(s, model)
         cw = int(oll.get("ctx") or s.get("context_window") or 0)
         reserve = int(s.get("max_tokens") or 0) or 1024
         fixed = est_tokens([{"role": "system", "content": system}, current]) + (est_tokens(tools) if tools else 0)
         budget = (cw - fixed - reserve) if cw else 10 ** 9
-        history, dropped = build_history(hist_rows, mapping, s, budget)
+        history, dropped = build_history(hist_rows, mapping, s, budget, with_images=vision)
         if dropped:
             meta["history_dropped"] = dropped
         messages = [{"role": "system", "content": system}, *history, current]
@@ -696,7 +760,7 @@ async def chat_stream(req: ChatIn):
             if tools and _round < int(s["max_tool_rounds"]):
                 kwargs["tools"] = tools
             # stima grossolana dei token (≈ 3,5 caratteri/token) per avvisare in caso di contesto saturo
-            est = int((len(json.dumps(messages, ensure_ascii=False)) + (len(json.dumps(tools)) if "tools" in kwargs else 0)) / 3.5)
+            est = est_tokens(messages) + (est_tokens(tools) if "tools" in kwargs else 0)
             cw = int(oll.get("ctx") or s.get("context_window") or 0)
             if cw and est > cw * 0.85 and not ctx_warned:
                 ctx_warned = True
@@ -899,7 +963,7 @@ async def chat_stream(req: ChatIn):
     except asyncio.CancelledError:
         raise
     except Exception as e:  # noqa: BLE001
-        meta["error"] = explain_llm_error(e, model)
+        meta["error"] = str(e) if isinstance(e, ValueError) else explain_llm_error(e, model)
         yield sse("error", {"text": meta["error"]})
     finally:
         db.x("INSERT INTO messages(conv_id, role, content, meta, created_at) VALUES(?,?,?,?,?)",

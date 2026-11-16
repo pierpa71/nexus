@@ -269,6 +269,21 @@ a.source:hover { border-color: var(--border-strong); color: var(--text); }
 .send-btn svg { stroke-width: 2.4; }
 .send-btn .i-stop { display: none; fill: #fff; stroke: none; }
 .send-btn.busy .i-send { display: none; } .send-btn.busy .i-stop { display: block; }
+.attach-strip { max-width: var(--chat-width); margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 8px; }
+.attach-strip.hidden { display: none; }
+.att-thumb { position: relative; width: 64px; height: 64px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border-strong); background: var(--panel); flex-shrink: 0; }
+.att-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.att-thumb.loading img { opacity: .4; }
+.att-thumb.loading::after { content: ""; position: absolute; inset: 0; margin: auto; width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid rgba(var(--fg-rgb),.25); border-top-color: var(--accent); animation: att-spin .8s linear infinite; }
+@keyframes att-spin { to { transform: rotate(360deg); } }
+.att-thumb button { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
+  display: grid; place-items: center; background: rgba(0,0,0,.65); color: #fff; }
+.att-thumb button svg { width: 12px; height: 12px; stroke-width: 2.6; }
+.msg-images { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-bottom: 8px; }
+.msg-images a { display: block; border-radius: 12px; overflow: hidden; border: 1px solid var(--border-strong); line-height: 0; }
+.msg-images img { max-width: 240px; max-height: 240px; object-fit: cover; display: block; }
+@media (max-width: 640px) { .msg-images img { max-width: 160px; max-height: 160px; } }
 .composer-hint { text-align: center; font-size: 11.5px; color: var(--faint); margin-top: 8px; }
 
 /* ---------------- Drawer ---------------- */
